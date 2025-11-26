@@ -12,6 +12,145 @@ This guide provides **complete step-by-step instructions** for implementing an R
 
 ---
 
+## Theory: Understanding RF Gain Staging
+
+### What is RF Gain?
+
+**Simple Explanation**: RF gain is like the volume knob on your radio, but for incoming signals. Turn it up too much and you get distortion (clipping). Turn it down too much and you only hear noise.
+
+**Technical Explanation**:
+In an SDR receiver, the RF gain controls how much the weak antenna signal is amplified before reaching the Analog-to-Digital Converter (ADC). The AD9361 chip in PlutoSDR has multiple gain stages that work together.
+
+### Why Does Gain Matter?
+
+Think of your signal like someone whispering across a noisy room:
+- **Too little gain** = Can't hear the whisper over the noise (poor SNR)
+- **Just right gain** = Clear signal, minimal noise (optimal SNR)
+- **Too much gain** = Whisper becomes a scream that distorts (clipping/saturation)
+
+### The AD9361 Gain Architecture
+
+PlutoSDR's AD9361 chip has THREE gain stages working together:
+
+```
+Antenna → [LNA] → [Mixer] → [Baseband Amp] → ADC
+          0-30dB   Variable   0-43dB         12-bit
+
+Total Gain Range: 0 to 73 dB
+```
+
+**1. LNA (Low Noise Amplifier)**: First stage, 0-30 dB in 3 dB steps
+   - **Job**: Amplify weak signals while adding minimal noise
+   - **Why first?**: Early amplification = better noise figure
+   - **Think of it as**: Cupping your hand around your ear
+
+**2. Mixer Gain**: Middle stage, variable gain
+   - **Job**: Convert RF frequency down to baseband while adjusting gain
+   - **Think of it as**: Fine-tuning the volume
+
+**3. Baseband Amplifier**: Final stage, 0-43 dB in 0.25 dB steps
+   - **Job**: Final amplification before ADC
+   - **Why last?**: Precise gain control doesn't need to handle noise as much
+   - **Think of it as**: Volume control right before your speakers
+
+### Key Concept: Signal-to-Noise Ratio (SNR)
+
+The fundamental equation for receiver SNR:
+
+```
+SNR_out = SNR_in + Gain - Noise_Figure
+
+Where:
+  SNR_in = Input signal-to-noise ratio (from antenna)
+  Gain = Total receiver gain (dB)
+  Noise_Figure = Noise added by receiver (dB)
+  SNR_out = Output SNR at ADC
+```
+
+**Example**:
+```
+Antenna receives: Signal = -80 dBm, Noise = -100 dBm
+                  SNR_in = -80 - (-100) = 20 dB
+
+Receiver: Gain = 60 dB, Noise Figure = 3 dB
+
+Output SNR: 20 + 60 - 3 = 77 dB ✓ Excellent!
+```
+
+### The Clipping Problem
+
+The ADC in PlutoSDR is 12-bit signed: **±2048** integer range
+
+**What happens with different gains**:
+
+```
+Signal at antenna: -70 dBm (weak signal)
+
+Gain = 30 dB:  Signal becomes -40 dBm → ADC sees ~200  ✓ Good (room to spare)
+Gain = 60 dB:  Signal becomes -10 dBm → ADC sees ~1800 ✓ Perfect (near full scale)
+Gain = 73 dB:  Signal becomes +3 dBm  → ADC sees >2048 ✗ CLIPPING!
+```
+
+**Clipping is BAD** because:
+- Distorts the signal (harmonics appear)
+- Loses information (peaks get flattened)
+- Makes demodulation difficult/impossible
+
+### Automatic Gain Control (AGC)
+
+PlutoSDR has **hardware AGC** that automatically adjusts gain:
+
+**How AGC Works**:
+```
+1. Measure signal power at ADC
+2. Too weak?  → Increase gain
+3. Too strong? → Decrease gain
+4. Repeat continuously
+```
+
+**AGC Modes**:
+
+| Mode | Attack Time | Use Case |
+|------|-------------|----------|
+| **Manual** | N/A (fixed) | When you know signal strength |
+| **Slow Attack** | ~100ms | Continuous signals (FM radio) |
+| **Fast Attack** | ~1ms | Burst signals (GSM, LTE) |
+
+**Trade-offs**:
+- **Slow AGC**: More stable, less jitter, but slow to adapt
+- **Fast AGC**: Quick adaptation, but can oscillate with noise
+
+### What This Lab Teaches You
+
+By running gain tests on PlutoSDR's ARM processor, you'll learn:
+
+1. **How gain affects SNR** - Measure signal power at different gains
+2. **Where clipping occurs** - Find the maximum safe gain
+3. **AGC behavior** - Compare slow vs fast attack modes
+4. **Practical calibration** - Determine optimal gain for your setup
+
+### Real-World Application
+
+**Example: Receiving GPS Signals**
+
+GPS signals are VERY weak at Earth's surface: ~-130 dBm
+
+```
+GPS signal: -130 dBm
+Noise floor: -110 dBm (thermal noise)
+SNR_in: -130 - (-110) = -20 dB  (signal below noise!)
+
+With 70 dB gain and 3 dB noise figure:
+SNR_out = -20 + 70 - 3 = 47 dB ✓ Now easily detectable
+
+But if gain was only 40 dB:
+SNR_out = -20 + 40 - 3 = 17 dB  (marginal, might lose lock)
+```
+
+**Key Insight**: For weak signals like GPS, you need HIGH gain. For strong signals like nearby FM radio, you need LOW gain to avoid clipping.
+
+---
+
 ## Part 1: Cross-Compilation Environment Setup
 
 ### Prerequisites
@@ -701,7 +840,202 @@ int main(int argc, char **argv)
 
 ---
 
-## Part 3: Compilation
+## Part 3: Compilation - Detailed Step-by-Step Guide
+
+### Understanding Cross-Compilation
+
+**What is cross-compilation?**
+- Your PC runs **x86** processor (Intel/AMD)
+- PlutoSDR runs **ARM** processor (Cortex-A9)
+- We compile on PC to create ARM binaries
+- Think of it like: "Translating a recipe for a different kitchen"
+
+### Step-by-Step Compilation Process
+
+#### **Step 1**: Prepare Your Workspace
+
+Create a directory for this lab:
+
+```bash
+# On your Linux PC:
+cd ~
+mkdir -p pluto_labs/lab1_2_method3
+cd pluto_labs/lab1_2_method3
+```
+
+**What this does**: Creates organized folder structure for your work
+
+---
+
+#### **Step 2**: Create the C Source File
+
+Copy the complete C code from Part 2 into a file:
+
+```bash
+nano lab1_2_method3_hosted.c
+# Paste the complete C code
+# Press Ctrl+X, then Y, then Enter to save
+```
+
+**Verify the file**:
+```bash
+ls -lh lab1_2_method3_hosted.c
+# Should show: -rw-r--r-- 1 user user ~35K lab1_2_method3_hosted.c
+```
+
+---
+
+#### **Step 3**: Create the Compilation Script
+
+```bash
+nano compile_lab1_2.sh
+# Paste the compilation script below
+# Save and exit
+chmod +x compile_lab1_2.sh
+```
+
+**What this does**: Makes the script executable (runnable)
+
+---
+
+#### **Step 4**: Understand the Compilation Flags
+
+Before compiling, let's understand what each flag does:
+
+```bash
+arm-linux-gnueabihf-gcc \
+  -Wall                    # Show all warnings (helps catch bugs)
+  -Wextra                  # Show extra warnings
+  -O2                      # Optimize for speed (level 2)
+  -std=c99                 # Use C99 standard
+  -I/opt/arm-libs/include  # Where to find header files (iio.h)
+  -o lab1_2_hosted         # Output filename
+  lab1_2_method3_hosted.c  # Input source file
+  -L/opt/arm-libs/lib      # Where to find libraries
+  -liio                    # Link with libiio library
+  -lm                      # Link with math library (for sqrt, sin, cos)
+  -lpthread                # Link with pthread library (for threading)
+```
+
+**Translation**:
+- **-Wall, -Wextra**: "Tell me about any suspicious code"
+- **-O2**: "Make it run fast"
+- **-I**: "Look for header files here"
+- **-L**: "Look for libraries here"
+- **-liio, -lm**: "I need these libraries to work"
+
+---
+
+#### **Step 5**: Run the Compilation
+
+```bash
+./compile_lab1_2.sh
+```
+
+**Watch for these stages**:
+
+1. **Checking prerequisites**: Script verifies you have ARM compiler and libiio
+2. **Compiling**: Translates C code to ARM machine code
+3. **Linking**: Connects your code with libraries (libiio, math)
+4. **Stripping**: Removes debugging symbols to make binary smaller
+5. **Verification**: Confirms binary is ARM architecture
+
+---
+
+#### **Step 6**: Check the Result
+
+If successful, you should see:
+
+```bash
+ls -lh lab1_2_hosted
+# -rwxr-xr-x 1 user user 32K lab1_2_hosted
+```
+
+**What the size means**:
+- ~32KB = Small, efficient binary (good!)
+- Compare to Python approach: no interpreter needed on PlutoSDR
+
+**Verify it's ARM**:
+```bash
+file lab1_2_hosted
+# Output: lab1_2_hosted: ELF 32-bit LSB executable, ARM, EABI5...
+```
+
+---
+
+### Common Compilation Errors and Solutions
+
+#### Error 1: "arm-linux-gnueabihf-gcc: command not found"
+
+**Problem**: ARM cross-compiler not installed
+
+**Solution**:
+```bash
+# Install cross-compiler
+sudo apt-get update
+sudo apt-get install gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf
+
+# Verify
+arm-linux-gnueabihf-gcc --version
+# Should show: arm-linux-gnueabihf-gcc (Ubuntu ...) X.X.X
+```
+
+---
+
+#### Error 2: "iio.h: No such file or directory"
+
+**Problem**: libiio headers not found
+
+**Solution**:
+```bash
+# Check if libiio was built for ARM
+ls -l /opt/arm-libs/include/iio.h
+
+# If not found, build it:
+cd ~
+git clone https://github.com/analogdevicesinc/libiio.git
+cd libiio
+mkdir build-arm && cd build-arm
+cmake .. -DCMAKE_C_COMPILER=arm-linux-gnueabihf-gcc \
+         -DCMAKE_INSTALL_PREFIX=/opt/arm-libs
+make -j$(nproc)
+sudo make install
+```
+
+---
+
+#### Error 3: "undefined reference to `sqrt`"
+
+**Problem**: Math library not linked
+
+**Solution**: Add `-lm` flag to compilation command (already in script)
+
+```bash
+# Correct:
+arm-linux-gnueabihf-gcc source.c -lm -o output
+
+# Wrong:
+arm-linux-gnueabihf-gcc -lm source.c -o output  # Library order matters!
+```
+
+---
+
+#### Error 4: Binary is x86, not ARM
+
+**Problem**: Used regular gcc instead of ARM cross-compiler
+
+**Solution**: Make sure you use `arm-linux-gnueabihf-gcc`, not just `gcc`
+
+```bash
+# Check which compiler was used:
+file lab1_2_hosted | grep ARM
+# Should see "ARM" in output
+
+# If it says "x86-64", you used wrong compiler
+# Delete and recompile with arm-linux-gnueabihf-gcc
+```
+
+---
 
 ### compile_lab1_2.sh
 
@@ -822,7 +1156,113 @@ Next step: Deploy to PlutoSDR using deploy_lab1_2.sh
 
 ---
 
-## Part 4: Deployment to PlutoSDR
+## Part 4: Deployment to PlutoSDR - Detailed Step-by-Step Guide
+
+### Understanding the Deployment Process
+
+**What we're doing**:
+1. Copy the ARM binary from your PC to PlutoSDR
+2. Copy the libiio library (if not already there)
+3. Make the binary executable
+4. Run it!
+
+**Think of it like**: Installing an app on your phone, but manually
+
+---
+
+### Step-by-Step Deployment Process
+
+#### **Step 1**: Connect PlutoSDR to Your PC
+
+**Physical Connection**:
+```bash
+# 1. Plug PlutoSDR into USB port
+# 2. Wait ~10 seconds for it to boot
+# 3. LED should be GREEN (ready)
+```
+
+**Verify Connection**:
+```bash
+# Check if PlutoSDR is reachable
+ping -c 3 192.168.2.1
+
+# Expected output:
+# 64 bytes from 192.168.2.1: icmp_seq=1 ttl=64 time=0.5 ms
+# ...
+# 3 packets transmitted, 3 received, 0% packet loss
+```
+
+**Troubleshooting Connection**:
+- **No ping response?** Check USB cable, try different port
+- **Different IP?** Check your network settings (should be 192.168.2.x)
+- **Firewall blocking?** Temporarily disable firewall for testing
+
+---
+
+#### **Step 2**: Test SSH Access
+
+**First time SSH** (will ask to verify fingerprint):
+```bash
+ssh root@192.168.2.1
+# Output: The authenticity of host '192.168.2.1'...
+# Type: yes
+# Password: analog
+```
+
+**What you'll see**:
+```
+Welcome to Pluto
+pluto login: root
+Password: analog
+# root@pluto:~#
+```
+
+**Exit for now**:
+```bash
+exit  # Return to your PC
+```
+
+---
+
+#### **Step 3**: Deploy libiio Library (First Time Only)
+
+**Check if libiio is already on PlutoSDR**:
+```bash
+ssh root@192.168.2.1 "ls -l /usr/lib/libiio.so"
+```
+
+**If not found**, deploy it:
+
+```bash
+# On your PC:
+scp /opt/arm-libs/lib/libiio.so.0 root@192.168.2.1:/usr/lib/
+# Password: analog
+
+# Create symlink on PlutoSDR:
+ssh root@192.168.2.1 "ln -sf /usr/lib/libiio.so.0 /usr/lib/libiio.so"
+
+# Verify:
+ssh root@192.168.2.1 "ls -lh /usr/lib/libiio.so*"
+# Should show: libiio.so -> libiio.so.0
+#              libiio.so.0 (actual file, ~230KB)
+```
+
+**Why we need this**: The binary we compiled uses libiio to talk to hardware
+
+---
+
+#### **Step 4**: Deploy Your Compiled Binary
+
+Create the deployment script:
+
+```bash
+# On your PC, in ~/pluto_labs/lab1_2_method3/
+nano deploy_lab1_2.sh
+# Paste script below, save
+chmod +x deploy_lab1_2.sh
+```
+
+---
 
 ### deploy_lab1_2.sh
 
@@ -1064,7 +1504,315 @@ Total Test Duration: 4.33 seconds
 
 ---
 
-## Part 7: Troubleshooting
+## Part 7: Integration with Other Labs and Projects
+
+### How This Lab Fits Into the Bigger Picture
+
+This lab taught you **how to configure gain** properly. But gain configuration is needed in EVERY SDR project! Here's how to use what you learned:
+
+---
+
+### Integration Example 1: Using with LAB 1.3 (I/Q Analysis)
+
+**Problem**: You're capturing I/Q samples but signal is too weak
+
+**Solution**: Use the gain knowledge from this lab
+
+```c
+// From LAB 1.2: We learned optimal gain is ~60 dB for typical signals
+
+// In LAB 1.3 code, set gain properly:
+set_channel_attr_str(sdr->rx_phy_ch, "gain_control_mode", "manual");
+set_channel_attr_ll(sdr->rx_phy_ch, "hardwaregain", 60);  // Use optimal gain
+
+// Now I/Q samples will have good SNR!
+```
+
+**Result**: Clear I/Q samples, no clipping, good SNR
+
+---
+
+### Integration Example 2: Using with PROJECT 5 (Tactical Radio)
+
+**Problem**: Tactical radio needs to work with varying signal strengths
+
+**Solution**: Implement adaptive gain control
+
+```c
+// Use LAB 1.2's gain measurement technique in your tactical radio:
+
+int adaptive_gain_adjustment(PlutoSDR *sdr) {
+    int current_gain = 30;  // Start conservative
+
+    for (int iteration = 0; iteration < 5; iteration++) {
+        // Set gain
+        set_manual_gain(sdr, current_gain);
+        usleep(50000);  // 50ms settling
+
+        // Measure (from LAB 1.2)
+        GainMeasurement meas;
+        measure_signal(sdr, &meas);
+
+        // Adjust based on results
+        if (meas.clipping) {
+            current_gain -= 6;  // Reduce if clipping
+            printf("Clipping detected, reducing gain to %d dB\n", current_gain);
+        } else if (meas.power_db < -30.0) {
+            current_gain += 6;  // Increase if too weak
+            printf("Weak signal, increasing gain to %d dB\n", current_gain);
+        } else {
+            printf("✓ Optimal gain found: %d dB\n", current_gain);
+            break;  // Good!
+        }
+    }
+
+    return current_gain;
+}
+
+// Use in tactical radio initialization:
+int optimal_gain = adaptive_gain_adjustment(&tactical_sdr);
+printf("Tactical radio using %d dB gain\n", optimal_gain);
+```
+
+**Result**: Radio automatically finds best gain for current conditions
+
+---
+
+### Integration Example 3: Calibration Table Creation
+
+**Use Case**: Create a calibration table for different scenarios
+
+**How to do it**:
+
+```c
+// Run LAB 1.2's gain sweep in different environments
+// Save results to a calibration file
+
+typedef struct {
+    char environment[32];  // "Indoor", "Outdoor", "Urban", etc.
+    int recommended_gain;
+    double noise_floor_db;
+} GainCalibration;
+
+// Example calibration table:
+GainCalibration cal_table[] = {
+    {"Indoor office",     50, -85.0},
+    {"Outdoor rural",     60, -90.0},
+    {"Urban with WiFi",   45, -75.0},
+    {"Next to FM tower",  20, -50.0}
+};
+
+// Later, in your application:
+int select_gain_for_environment(const char *env) {
+    for (int i = 0; i < sizeof(cal_table)/sizeof(cal_table[0]); i++) {
+        if (strcmp(cal_table[i].environment, env) == 0) {
+            return cal_table[i].recommended_gain;
+        }
+    }
+    return 50;  // Default fallback
+}
+
+// Usage:
+int gain = select_gain_for_environment("Outdoor rural");
+set_manual_gain(&sdr, gain);
+```
+
+---
+
+### Integration Example 4: Combining with Frequency Hopping
+
+**From PROJECT 4**: Frequency hopping with adaptive gain per frequency
+
+```c
+// Some frequencies might need different gain (interference, propagation)
+
+typedef struct {
+    long long frequency_hz;
+    int optimal_gain_db;
+    bool has_interference;
+} FrequencyProfile;
+
+FrequencyProfile freq_profiles[NUM_HOPS];
+
+// Calibration phase (run once):
+void calibrate_frequency_hopping_gains(PlutoSDR *sdr) {
+    printf("Calibrating gains for %d hop frequencies...\n", NUM_HOPS);
+
+    for (int i = 0; i < NUM_HOPS; i++) {
+        // Tune to frequency
+        long long freq = hop_frequencies[i];
+        set_channel_attr_ll(rx_lo, "frequency", freq);
+
+        // Find optimal gain using LAB 1.2 technique
+        int best_gain = 0;
+        double best_snr = -999.0;
+
+        for (int gain = 0; gain <= 73; gain += 3) {
+            set_manual_gain(sdr, gain);
+            usleep(50000);
+
+            GainMeasurement meas;
+            measure_signal(sdr, &meas);
+
+            double snr = meas.power_db - noise_floor_estimate(sdr);
+
+            if (snr > best_snr && !meas.clipping) {
+                best_snr = snr;
+                best_gain = gain;
+            }
+        }
+
+        // Save profile
+        freq_profiles[i].frequency_hz = freq;
+        freq_profiles[i].optimal_gain_db = best_gain;
+        freq_profiles[i].has_interference = (best_snr < 10.0);
+
+        printf("  %lld MHz: Gain=%d dB, SNR=%.1f dB %s\n",
+               freq / 1000000, best_gain, best_snr,
+               freq_profiles[i].has_interference ? "⚠ INTERFERENCE" : "✓");
+    }
+}
+
+// During hopping:
+void hop_with_adaptive_gain(int hop_index) {
+    // Set frequency
+    set_channel_attr_ll(rx_lo, "frequency", freq_profiles[hop_index].frequency_hz);
+
+    // Set pre-calibrated gain
+    set_manual_gain(&sdr, freq_profiles[hop_index].optimal_gain_db);
+
+    // Skip this hop if bad interference
+    if (freq_profiles[hop_index].has_interference) {
+        printf("Skipping frequency due to interference\n");
+        return;
+    }
+
+    // Continue with transmission/reception...
+}
+```
+
+---
+
+### Integration Example 5: Building a Spectrum Analyzer
+
+**Combine with**: FFT (from future labs) + Gain control
+
+```c
+// Use LAB 1.2 gain control + FFT to build spectrum analyzer
+
+void spectrum_analyzer_sweep(PlutoSDR *sdr, long long start_freq, long long stop_freq) {
+    int gain = 50;  // Start with medium gain
+    long long step = 1000000;  // 1 MHz steps
+
+    printf("Spectrum Analyzer: %.1f - %.1f MHz\n",
+           start_freq/1e6, stop_freq/1e6);
+    printf("Freq (MHz) │ Power (dB) │ Gain (dB) │ Status\n");
+    printf("───────────┼────────────┼───────────┼─────────\n");
+
+    for (long long freq = start_freq; freq <= stop_freq; freq += step) {
+        // Tune
+        set_channel_attr_ll(rx_lo, "frequency", freq);
+
+        // Adjust gain if needed
+        set_manual_gain(sdr, gain);
+        usleep(10000);  // 10ms settling
+
+        // Measure
+        GainMeasurement meas;
+        measure_signal(sdr, &meas);
+
+        // Auto-adjust gain for next frequency
+        if (meas.clipping) {
+            gain = (gain > 6) ? gain - 6 : 0;
+        } else if (meas.power_db < -40.0 && gain < 67) {
+            gain += 6;
+        }
+
+        // Display
+        const char *status = meas.clipping ? "CLIP" : "OK";
+        printf("%10.1f │ %+9.1f  │ %8d  │ %s\n",
+               freq/1e6, meas.power_db, gain, status);
+    }
+}
+
+// Usage:
+spectrum_analyzer_sweep(&sdr, 900e6, 1000e6);  // Sweep 900-1000 MHz
+```
+
+---
+
+### Integration Best Practices
+
+**1. Always check for clipping**:
+```c
+if (meas.clipping) {
+    fprintf(stderr, "WARNING: Signal clipping at %d dB gain!\n", current_gain);
+    // Reduce gain or alert user
+}
+```
+
+**2. Log gain changes** for debugging:
+```c
+FILE *gain_log = fopen("gain_log.txt", "a");
+fprintf(gain_log, "%ld,%d,%.2f,%s\n",
+        time(NULL), gain_db, power_db,
+        clipping ? "CLIP" : "OK");
+fclose(gain_log);
+```
+
+**3. Provide user feedback**:
+```c
+printf("Signal Quality:\n");
+printf("  Gain:     %d dB\n", current_gain);
+printf("  Power:    %.1f dB\n", measured_power);
+printf("  Clipping: %s\n", clipping ? "YES ⚠" : "NO ✓");
+printf("  Quality:  %s\n", quality_assessment(measured_power, clipping));
+```
+
+---
+
+### Real-World Integration: Complete Receiver
+
+**Putting it all together** - A complete receiver using multiple labs:
+
+```c
+typedef struct {
+    PlutoSDR sdr;
+    int rx_gain;          // From LAB 1.2
+    double dc_i, dc_q;    // From LAB 1.3
+    // Add more as you learn more labs
+} CompleteReceiver;
+
+int init_complete_receiver(CompleteReceiver *rx, long long freq) {
+    // Initialize hardware
+    init_plutosdr(&rx->sdr);
+
+    // Set frequency
+    set_channel_attr_ll(rx_lo, "frequency", freq);
+
+    // Find optimal gain (LAB 1.2)
+    rx->rx_gain = find_optimal_gain(&rx->sdr);
+    printf("✓ Optimal gain: %d dB\n", rx->rx_gain);
+
+    // Measure DC offset (LAB 1.3)
+    measure_dc_offset(&rx->sdr, &rx->dc_i, &rx->dc_q);
+    printf("✓ DC offset: I=%.2f, Q=%.2f\n", rx->dc_i, rx->dc_q);
+
+    // Ready to receive!
+    return 0;
+}
+
+// Use it:
+CompleteReceiver my_receiver;
+init_complete_receiver(&my_receiver, 915000000);  // 915 MHz
+
+// Now receive with optimized settings
+receive_and_process(&my_receiver);
+```
+
+---
+
+## Part 8: Troubleshooting
 
 ### Common Issues
 
