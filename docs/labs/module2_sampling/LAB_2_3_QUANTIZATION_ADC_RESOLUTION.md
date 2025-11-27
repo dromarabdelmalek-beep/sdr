@@ -3094,6 +3094,701 @@ This completes Part 7 with detailed compilation instructions and troubleshooting
 
 ---
 
+## Part 8: Deployment and Integration Guide
+
+This final section covers deploying the compiled binary to PlutoSDR, running the quantization analysis tests, interpreting results, and integrating quantization measurements into real-world SDR applications.
+
+### Deployment to PlutoSDR
+
+#### Step 1: Connect to PlutoSDR
+
+**Via USB** (default):
+```bash
+# PlutoSDR appears as network device at 192.168.2.1
+ping 192.168.2.1
+# Should get replies (latency ~1-5ms)
+
+# SSH into PlutoSDR (default password: analog)
+ssh root@192.168.2.1
+# Password: analog
+```
+
+**Via Network** (if configured):
+```bash
+ssh root@<pluto-ip-address>
+```
+
+**First-Time Setup**:
+If this is your first time connecting, you may see:
+```
+The authenticity of host '192.168.2.1 (192.168.2.1)' can't be established.
+ECDSA key fingerprint is SHA256:...
+Are you sure you want to continue connecting (yes/no)? yes
+```
+Type `yes` and press Enter.
+
+---
+
+#### Step 2: Transfer Binary to PlutoSDR
+
+Use `scp` (Secure Copy) to transfer the compiled binary:
+
+```bash
+# From your development machine
+scp lab2_3_quantization root@192.168.2.1:/root/
+# Password: analog
+```
+
+**Expected Output**:
+```
+lab2_3_quantization                   100%   24KB  24.5KB/s   00:01
+```
+
+**Alternative** (if scp fails):
+```bash
+# Using sftp
+sftp root@192.168.2.1
+sftp> put lab2_3_quantization
+sftp> quit
+```
+
+**Verify Transfer**:
+```bash
+ssh root@192.168.2.1 "ls -lh /root/lab2_3_quantization"
+# Should show: -rw-r--r-- 1 root root 24K ... lab2_3_quantization
+```
+
+---
+
+#### Step 3: Make Binary Executable
+
+SSH into PlutoSDR and set execute permissions:
+
+```bash
+ssh root@192.168.2.1
+chmod +x /root/lab2_3_quantization
+ls -l /root/lab2_3_quantization
+# Should show: -rwxr-xr-x (executable bit set)
+```
+
+---
+
+#### Step 4: Run the Program
+
+Execute the quantization analysis:
+
+```bash
+./lab2_3_quantization
+```
+
+**Expected Output** (abbreviated):
+```
+========================================
+LAB 2.3: Quantization and ADC Resolution
+========================================
+
+PlutoSDR initialized successfully
+Sample Rate: 2.084 MSPS
+Center Frequency: 915.000 MHz
+RX Gain: 40 dB
+
+=== Test 1: Quantization SNR vs Bit Depth ===
+Captured 16384 samples at 12-bit resolution
+
+Quantization SNR Results:
+Bit Depth   Theory (dB)     Measured (dB)   Error (dB)
+------------------------------------------------------------
+12          73.96           72.15           -1.81
+10          61.96           60.32           -1.64
+8           49.96           48.28           -1.68
+6           37.96           36.14           -1.82
+
+Interpretation:
+- Each bit adds ~6 dB of SNR (6.02 dB theoretical)
+- 12-bit: 74 dB, 10-bit: 62 dB, 8-bit: 50 dB, 6-bit: 38 dB
+- Measured SNR may differ due to signal characteristics
+
+=== Test 2: ENOB Measurement ===
+ENOB Measurement Results:
+  Measured SNR:        70.24 dB
+  Ideal 12-bit SNR:    73.96 dB
+  SNR Loss:            3.72 dB
+  ENOB:                11.38 bits
+  Bits Lost:           0.62 bits
+
+Noise Sources Contributing to ENOB Loss:
+  - Thermal noise (dominates): ~50 dB floor
+  - Clock jitter: ~80 dB (100 fs typical)
+  - ADC nonlinearity: ~75 dB
+  - Quantization noise: ~74 dB (12-bit)
+
+AD9361 Typical Performance:
+  - ENOB: 11.0-11.5 bits (70-72 dB SNR)
+  - Your measurement: 11.38 bits
+  ✓ Within expected range
+
+=== Test 3: SFDR Analysis ===
+SFDR Analysis Results:
+  Fundamental Frequency: 100.00 kHz
+  Fundamental Power:     -12.50 dBFS
+  SFDR:                  65.32 dB
+  THD:                   -68.45 dB
+
+Harmonic Content:
+  Harmonic    Frequency (kHz) Power (dBFS)    Relative (dB)
+  ---------------------------------------------------------------
+  HD2         200.00          -77.82          -65.32
+  HD3         300.00          -82.15          -69.65
+  HD4         400.00          -85.47          -72.97
+  HD5         500.00          -88.23          -75.73
+  HD6         600.00          -90.58          -78.08
+
+Interpretation:
+  - SFDR: Distance to largest spur (harmonic or intermod)
+  - AD9361 typical SFDR: 60-70 dB
+  - Your measurement: 65.32 dB (Good)
+
+=== Test 4: Clipping Detection ===
+Clipping Detection Results:
+  Signal RMS:            -18.45 dBFS
+  Signal Peak:           -9.23 dBFS
+  Headroom:              9.23 dB
+  PAR (Peak-to-Average): 9.22 dB
+  Clipping Percentage:   0.0000%
+
+Clipping Status: ✓ NO CLIPPING
+
+Headroom Assessment: ✓ Good (6-12 dB)
+  Good headroom for varying signals
+
+=== Test 5: Dithering Effect ===
+Dithering Effect Results (8-bit quantization):
+
+Metric                    No Dither       With Dither     Change
+-----------------------------------------------------------------------------
+SNR (dB)                  48.24           43.51           -4.73
+THD (dB)                  -52.34          -55.87          -3.53
+SFDR (dB)                 52.45           55.12           2.67
+
+Interpretation:
+  - Dithering adds noise (~4.77 dB for triangular TPDF)
+  - SNR decreases slightly due to added noise
+  - THD and SFDR may improve (linearization effect)
+  - Dither 'whitens' quantization noise (decorrelates from signal)
+  - Trade-off: Noise floor vs low-level linearity
+
+When to Use Dithering:
+  ✓ Audio applications (improves perceived quality)
+  ✓ Weak signals near quantization step size
+  ✓ When harmonic distortion is problematic
+  ✗ Strong signals (dithering penalty outweighs benefit)
+  ✗ When maximizing SNR is critical
+
+=== Test 6: Dynamic Range Measurement ===
+Dynamic Range Measurement:
+  Full Scale:             0.00 dBFS
+  Signal Level:           -12.50 dBFS
+  Noise Floor:            -82.74 dBFS
+  Theoretical DR (12-bit): 72.24 dB
+  Measured DR:            82.74 dB
+  SFDR:                   65.32 dB
+  Usable DR:              59.32 dB
+
+Dynamic Range Breakdown:
+  Theoretical (quantization only):  72.24 dB
+  Lost to thermal noise:             -10.50 dB
+  Lost to spurs/harmonics:           23.42 dB
+
+Interpretation:
+  - Theoretical DR: 6.02 × N dB for N-bit ADC
+  - Measured DR: Limited by thermal noise (dominates)
+  - Usable DR: Limited by SFDR (spurs/harmonics)
+  - AD9361 typical usable DR: 55-65 dB
+  - Your measurement: 59.32 dB (Good)
+
+Tests completed successfully
+```
+
+---
+
+### Understanding Test Results
+
+#### Test 1: Quantization SNR
+
+**What It Measures**: SNR degradation when requantizing to lower bit depths
+
+**Key Metrics**:
+- Theoretical SNR = 6.02N + 1.76 dB
+- Each bit adds ~6 dB of SNR
+- Error typically -1 to -2 dB (due to noise sources)
+
+**Interpretation**:
+- ✅ **Good**: Error < 2 dB → Noise sources minimal
+- ⚠ **Acceptable**: Error 2-4 dB → Some noise present
+- ❌ **Poor**: Error > 4 dB → Check signal quality, clipping, or interference
+
+---
+
+#### Test 2: ENOB
+
+**What It Measures**: Effective resolution after noise degradation
+
+**Key Metrics**:
+- ENOB = (SNR_measured - 1.76) / 6.02
+- AD9361 typical: 11.0-11.5 bits
+
+**Interpretation**:
+- ✅ **11.0-11.5 bits**: Expected performance
+- ⚠ **10.5-11.0 bits**: Slightly below spec (check RX gain)
+- ❌ **< 10.5 bits**: Poor performance (check for clipping, strong interferers)
+
+**Common Causes of Low ENOB**:
+1. **Thermal noise** (dominates) → Increase signal level or reduce bandwidth
+2. **Clipping** → Reduce RX gain
+3. **Strong interferers** → Use filtering
+4. **Clock jitter** → Check reference clock quality
+
+---
+
+#### Test 3: SFDR
+
+**What It Measures**: Distance to largest spurious tone (harmonic or intermodulation)
+
+**Key Metrics**:
+- AD9361 typical SFDR: 60-70 dB
+- HD2 (2nd harmonic) usually dominates
+
+**Interpretation**:
+- ✅ **≥ 60 dB**: Good linearity
+- ⚠ **50-60 dB**: Acceptable for most applications
+- ❌ **< 50 dB**: Check for clipping or strong interferers
+
+**Applications**:
+- **High SFDR needed** (>65 dB): Spectrum monitoring, interference detection
+- **Moderate SFDR acceptable** (50-65 dB): Digital communications, IoT
+- **Low SFDR tolerable** (<50 dB): Energy detection, basic signal presence
+
+---
+
+#### Test 4: Clipping Detection
+
+**What It Measures**: Signal saturation and headroom
+
+**Key Metrics**:
+- Clipping percentage: % of samples at full scale
+- Headroom: Distance from peak to 0 dBFS
+- PAR: Peak-to-Average Ratio
+
+**Interpretation**:
+- ✅ **0% clipping, 6-12 dB headroom**: Optimal
+- ⚠ **0.01-0.1% clipping, 3-6 dB headroom**: Acceptable
+- ❌ **> 0.1% clipping, < 3 dB headroom**: Reduce RX gain immediately
+
+**Recommended Actions**:
+| Clipping % | Headroom | Action |
+|------------|----------|--------|
+| 0%         | > 12 dB  | Increase RX gain (better SNR) |
+| 0%         | 6-12 dB  | No action needed |
+| 0%         | 3-6 dB   | Consider reducing gain slightly |
+| 0.01-0.1%  | Any      | Reduce RX gain by 1-3 dB |
+| 0.1-1.0%   | Any      | Reduce RX gain by 3-6 dB |
+| > 1.0%     | Any      | Reduce RX gain by 6-12 dB |
+
+---
+
+#### Test 5: Dithering Effect
+
+**What It Measures**: Linearization effect vs noise penalty
+
+**Key Metrics**:
+- SNR degradation: ~4.77 dB for triangular TPDF
+- THD/SFDR improvement: Varies based on signal
+
+**When to Apply Dithering**:
+1. **Audio applications**: Improves perceived quality at low bit depths
+2. **Weak signals**: Near quantization step size (LSB)
+3. **Harmonic distortion**: When THD is problematic
+
+**When NOT to Apply Dithering**:
+1. **Strong signals**: Noise penalty outweighs benefit
+2. **SNR-critical applications**: Every dB matters
+3. **Digital communications**: BER more important than linearity
+
+---
+
+#### Test 6: Dynamic Range
+
+**What It Measures**: System range from full-scale to noise floor
+
+**Key Metrics**:
+- Theoretical DR: 6.02 × 12 = 72.24 dB
+- Measured DR: Typically 70-85 dB (includes noise)
+- Usable DR: SFDR - 6 dB (practical limit)
+
+**Interpretation**:
+- ✅ **Usable DR ≥ 55 dB**: Good for most applications
+- ⚠ **Usable DR 45-55 dB**: Acceptable for narrowband
+- ❌ **Usable DR < 45 dB**: Poor performance
+
+---
+
+### Troubleshooting
+
+#### Issue 1: "Failed to create IIO context"
+
+**Symptoms**:
+```
+Failed to create IIO context
+Failed to initialize PlutoSDR
+```
+
+**Causes & Solutions**:
+1. **PlutoSDR not connected**
+   ```bash
+   ping 192.168.2.1
+   # Should get replies
+   ```
+
+2. **libiio not installed on PlutoSDR** (rare)
+   ```bash
+   ssh root@192.168.2.1 "opkg update && opkg install libiio"
+   ```
+
+3. **Wrong IP address**
+   ```bash
+   # Check PlutoSDR IP with:
+   ssh root@192.168.2.1 "ip addr show usb0"
+   ```
+
+---
+
+#### Issue 2: Binary doesn't run (Exec format error)
+
+**Symptoms**:
+```
+-sh: ./lab2_3_quantization: Exec format error
+```
+
+**Cause**: Compiled for wrong architecture (x86_64 instead of ARM)
+
+**Solution**: Recompile with ARM cross-compiler:
+```bash
+# On development machine
+arm-linux-gnueabihf-gcc -o lab2_3_quantization lab2_3_quantization.c -liio -lm -O2
+scp lab2_3_quantization root@192.168.2.1:/root/
+```
+
+**Verify**:
+```bash
+file lab2_3_quantization | grep ARM
+# Should contain "ARM"
+```
+
+---
+
+#### Issue 3: SNR much lower than expected (< 60 dB)
+
+**Possible Causes**:
+
+1. **No input signal** (noise floor measurement)
+   - **Solution**: Connect antenna or signal generator
+
+2. **RX gain too low** (signal at noise floor)
+   - **Solution**: Increase RX gain in code (try 50-60 dB)
+
+3. **Clipping** (RX gain too high)
+   - **Solution**: Check Test 4 output, reduce gain if clipping
+
+4. **Strong interferer**
+   - **Solution**: Use filtering or change frequency
+
+---
+
+#### Issue 4: SFDR much lower than expected (< 50 dB)
+
+**Possible Causes**:
+
+1. **Clipping**
+   - **Check**: Test 4 clipping percentage
+   - **Solution**: Reduce RX gain
+
+2. **Strong out-of-band interferer**
+   - **Check**: Change center frequency
+   - **Solution**: Add analog filtering
+
+3. **Harmonic from test tone**
+   - **Check**: Is HD2 at 2× test frequency?
+   - **Solution**: Use purer signal source
+
+---
+
+### Integration Examples
+
+#### Integration 1: Real-Time ADC Quality Monitor
+
+Monitor ADC performance continuously and alert on degradation:
+
+```c
+/*
+ * ADC Quality Monitor
+ * Continuously measure ENOB and SFDR, alert if below threshold
+ */
+
+#include <stdio.h>
+#include <stdbool.h>
+#include <time.h>
+
+#define ENOB_THRESHOLD 10.5    // Bits
+#define SFDR_THRESHOLD 55.0    // dB
+#define CHECK_INTERVAL 10      // Seconds
+
+typedef struct {
+    time_t timestamp;
+    double enob;
+    double sfdr;
+    double snr;
+    bool alert;
+} PerformanceLog;
+
+void monitor_adc_quality(void)
+{
+    PerformanceLog log;
+
+    while (1) {
+        /* Capture samples */
+        int16_t i_samples[16384], q_samples[16384];
+        capture_samples(i_samples, q_samples, 16384);
+
+        /* Analyze performance */
+        SpectrumAnalysis analysis;
+        compute_spectrum_analysis(i_samples, q_samples, 16384, 2084000, &analysis);
+
+        log.timestamp = time(NULL);
+        log.enob = (analysis.snr_db - 1.76) / 6.02;
+        log.sfdr = analysis.sfdr_db;
+        log.snr = analysis.snr_db;
+        log.alert = (log.enob < ENOB_THRESHOLD) || (log.sfdr < SFDR_THRESHOLD);
+
+        /* Log results */
+        printf("[%s] ENOB: %.2f bits, SFDR: %.2f dB, SNR: %.2f dB %s\n",
+               ctime(&log.timestamp), log.enob, log.sfdr, log.snr,
+               log.alert ? "[ALERT]" : "[OK]");
+
+        /* Alert if below threshold */
+        if (log.alert) {
+            fprintf(stderr, "WARNING: ADC performance degraded!\n");
+            if (log.enob < ENOB_THRESHOLD) {
+                fprintf(stderr, "  ENOB: %.2f < %.2f bits\n", log.enob, ENOB_THRESHOLD);
+            }
+            if (log.sfdr < SFDR_THRESHOLD) {
+                fprintf(stderr, "  SFDR: %.2f < %.2f dB\n", log.sfdr, SFDR_THRESHOLD);
+            }
+        }
+
+        sleep(CHECK_INTERVAL);
+    }
+}
+```
+
+**Use Case**: Long-term spectrum monitoring, satellite ground stations, test equipment calibration
+
+---
+
+#### Integration 2: Automatic Gain Control (AGC) Based on Clipping
+
+Adjust RX gain automatically to prevent clipping while maximizing SNR:
+
+```c
+/*
+ * Automatic Gain Control
+ * Dynamically adjust RX gain to maintain optimal signal level
+ */
+
+#define TARGET_PEAK_DBFS -10.0   // Target peak level
+#define TARGET_HEADROOM 9.0      // dB
+#define MAX_GAIN 73              // dB
+#define MIN_GAIN 0               // dB
+#define GAIN_STEP 3              // dB
+
+int current_gain = 40;  // Starting gain
+
+void auto_gain_control(void)
+{
+    int16_t i_samples[16384], q_samples[16384];
+
+    while (1) {
+        /* Capture samples */
+        capture_samples(i_samples, q_samples, 16384);
+
+        /* Detect clipping and measure peak */
+        double clip_percentage;
+        detect_clipping(i_samples, q_samples, 16384, &clip_percentage);
+
+        /* Find peak level */
+        int16_t i_max = 0, q_max = 0;
+        for (int n = 0; n < 16384; n++) {
+            if (abs(i_samples[n]) > abs(i_max)) i_max = i_samples[n];
+            if (abs(q_samples[n]) > abs(q_max)) q_max = q_samples[n];
+        }
+        int16_t peak = (abs(i_max) > abs(q_max)) ? abs(i_max) : abs(q_max);
+        double peak_dbfs = 20.0 * log10(peak / 2048.0);
+        double headroom = 0.0 - peak_dbfs;
+
+        /* Adjust gain based on headroom */
+        int new_gain = current_gain;
+
+        if (clip_percentage > 0.1) {
+            /* Clipping: reduce gain immediately */
+            new_gain = current_gain - 2 * GAIN_STEP;
+            printf("CLIPPING DETECTED (%.2f%%) - Reducing gain %d → %d dB\n",
+                   clip_percentage, current_gain, new_gain);
+        } else if (headroom < 3.0) {
+            /* Low headroom: reduce gain */
+            new_gain = current_gain - GAIN_STEP;
+            printf("Low headroom (%.1f dB) - Reducing gain %d → %d dB\n",
+                   headroom, current_gain, new_gain);
+        } else if (headroom > 15.0) {
+            /* Excessive headroom: increase gain (better SNR) */
+            new_gain = current_gain + GAIN_STEP;
+            printf("Excessive headroom (%.1f dB) - Increasing gain %d → %d dB\n",
+                   headroom, current_gain, new_gain);
+        } else {
+            printf("Optimal headroom (%.1f dB) - Maintaining gain at %d dB\n",
+                   headroom, current_gain);
+        }
+
+        /* Clamp to valid range */
+        if (new_gain > MAX_GAIN) new_gain = MAX_GAIN;
+        if (new_gain < MIN_GAIN) new_gain = MIN_GAIN;
+
+        /* Apply new gain if changed */
+        if (new_gain != current_gain) {
+            struct iio_channel *rx0 = iio_device_find_channel(phy, "voltage0", false);
+            iio_channel_attr_write_longlong(rx0, "hardwaregain", new_gain);
+            current_gain = new_gain;
+        }
+
+        sleep(1);  /* Check every second */
+    }
+}
+```
+
+**Use Case**: Varying signal environments, mobile receivers, interference-heavy bands
+
+---
+
+#### Integration 3: Spectrum Analyzer with SFDR Highlighting
+
+Display spectrum with harmonic markers and SFDR measurement:
+
+```c
+/*
+ * Spectrum Analyzer with SFDR Display
+ * Show spectrum with fundamental and harmonics marked
+ */
+
+void spectrum_analyzer_sfdr(void)
+{
+    int16_t i_samples[16384], q_samples[16384];
+    capture_samples(i_samples, q_samples, 16384);
+
+    SpectrumAnalysis analysis;
+    compute_spectrum_analysis(i_samples, q_samples, 16384, 2084000, &analysis);
+
+    printf("\n=== Spectrum Analyzer (SFDR Mode) ===\n");
+    printf("Fundamental: %.2f kHz at %.2f dBFS\n",
+           analysis.fundamental.frequency / 1000.0,
+           analysis.fundamental.power_dbfs);
+    printf("SFDR: %.2f dB\n\n", analysis.sfdr_db);
+
+    printf("Freq (kHz)  Power (dBFS)  Type\n");
+    printf("----------------------------------\n");
+    printf("%-11.2f %-13.2f [FUNDAMENTAL]\n",
+           analysis.fundamental.frequency / 1000.0,
+           analysis.fundamental.power_dbfs);
+
+    for (int h = 0; h < analysis.num_harmonics; h++) {
+        printf("%-11.2f %-13.2f [HD%d]\n",
+               analysis.harmonics[h].frequency / 1000.0,
+               analysis.harmonics[h].power_dbfs,
+               h + 2);
+    }
+
+    /* ASCII spectrum plot */
+    printf("\nSpectrum (ASCII):\n");
+    for (int bin = 0; bin < 50; bin++) {
+        double freq = (bin * 2084000.0 / 50) / 1000.0;  // kHz
+        printf("%6.1f kHz | ", freq);
+
+        /* Simplified: Would compute actual DFT bin power here */
+        int bars = 20;  /* Placeholder */
+        for (int i = 0; i < bars; i++) printf("=");
+        printf("\n");
+    }
+}
+```
+
+**Use Case**: RF debugging, interference hunting, signal identification
+
+---
+
+#### Integration 4: Dithering Optimization for Audio Streaming
+
+Apply optimal dithering for high-quality audio reception:
+
+```c
+/*
+ * Audio Receiver with Dithering
+ * Apply triangular TPDF dithering to improve audio quality
+ */
+
+void audio_receiver_with_dithering(void)
+{
+    const int OUTPUT_BIT_DEPTH = 16;  // Output to 16-bit DAC
+    const int ADC_BIT_DEPTH = 12;     // PlutoSDR ADC
+
+    while (1) {
+        int16_t i_samples[16384], q_samples[16384];
+        capture_samples(i_samples, q_samples, 16384);
+
+        /* Demodulate FM audio (simplified) */
+        int16_t audio_samples[16384];
+        fm_demodulate(i_samples, q_samples, audio_samples, 16384);
+
+        /* Apply triangular dither before requantization */
+        if (OUTPUT_BIT_DEPTH < ADC_BIT_DEPTH) {
+            add_triangular_dither(audio_samples, 16384, OUTPUT_BIT_DEPTH);
+            quantize_samples(audio_samples, audio_samples, 16384, OUTPUT_BIT_DEPTH);
+        }
+
+        /* Send to audio output */
+        audio_output_write(audio_samples, 16384);
+    }
+}
+
+/* Benefits:
+ * - Reduces "quantization harshness" at low bit depths
+ * - Whitens quantization noise (less audible)
+ * - Improves perceived audio quality
+ * - Trade-off: +4.77 dB noise floor (usually acceptable for audio)
+ */
+```
+
+**Use Case**: FM radio receivers, SSB voice, amateur radio, broadcast monitoring
+
+---
+
+This completes Part 8 and the entire LAB 2.3 Method 3 enhancement!
+
+**Total Enhancement Summary for LAB 2.3**:
+- Part 5: Theory Deep Dive (~576 lines)
+- Part 6: Complete C Source Code (~950 lines)
+- Part 7: Compilation Guide (~625 lines)
+- Part 8: Deployment & Integration (~650 lines)
+- **Grand Total: ~2,801 lines**
+
+---
+
 ## Summary
 
 In this lab, you learned:
