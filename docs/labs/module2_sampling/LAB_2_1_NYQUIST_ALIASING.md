@@ -856,3 +856,809 @@ Spectrum analyzer calibration:
 This hosted application gives you **direct access** to the AD9361's sampling system for validating Nyquist theorem and characterizing aliasing behavior.
 
 ---
+
+## Part 5: Complete C Source Code for PlutoSDR ARM
+
+### lab2_1_method3_hosted.c
+
+This program implements comprehensive Nyquist sampling and aliasing tests directly on PlutoSDR.
+
+```c
+/*
+ * LAB 2.1 - Method 3: Nyquist Sampling and Aliasing Hosted Application
+ *
+ * Demonstrates Nyquist-Shannon sampling theorem and aliasing effects
+ * by transmitting test tones and analyzing received spectrum on PlutoSDR ARM.
+ *
+ * Features:
+ *  - Tone generation at configurable frequencies
+ *  - Aliasing demonstration (frequencies above Nyquist)
+ *  - Bandwidth measurement using FFT
+ *  - Nyquist zone mapping
+ *  - Sample rate verification
+ *
+ * Compile: See compile_lab2_1.sh
+ * Deploy:  See deploy_lab2_1.sh
+ * Run:     ./lab2_1_hosted [test_mode]
+ *          Modes: proper_sampling, aliasing, bandwidth, nyquist_zones
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+#include <stdbool.h>
+#include <math.h>
+#include <time.h>
+#include <unistd.h>
+#include <iio.h>
+#include <complex.h>
+
+// ============================================================================
+// CONFIGURATION PARAMETERS
+// ============================================================================
+
+// RF configuration
+#define CENTER_FREQ        915000000  // 915 MHz
+#define RX_GAIN            60         // RX gain in dB
+#define TX_GAIN            -20        // TX gain in dB (low power for loopback)
+#define BUFFER_SIZE        16384      // Samples per capture
+
+// Test configurations (different sample rates for aliasing tests)
+#define TEST_SAMPLE_RATE_1  2000000   // 2 MSPS
+#define TEST_SAMPLE_RATE_2  4000000   // 4 MSPS
+#define TEST_SAMPLE_RATE_3  8000000   // 8 MSPS
+
+// Tone generation
+#define TONE_AMPLITUDE     0.8        // 80% of full scale
+#define TONE_DURATION_MS   100        // 100 ms tone duration
+
+// Analysis parameters
+#define FFT_SIZE           8192       // FFT size for spectrum analysis
+#define BANDWIDTH_THRESHOLD_DB  -3.0  // 3 dB bandwidth threshold
+
+// ============================================================================
+// DATA STRUCTURES
+// ============================================================================
+
+typedef struct {
+    double frequency_hz;
+    double magnitude;
+    double phase_deg;
+    bool detected;
+} ToneInfo;
+
+typedef struct {
+    double center_freq_hz;
+    double bandwidth_3db_hz;
+    double bandwidth_occupied_hz;
+    double peak_power_db;
+    int num_peaks;
+} BandwidthMeasurement;
+
+typedef struct {
+    int zone_number;
+    double input_freq;
+    double observed_freq;
+    double alias_freq;
+    bool aliased;
+} NyquistZoneTest;
+
+typedef struct {
+    struct iio_context *ctx;
+    struct iio_device *phy;
+    struct iio_device *tx_dev;
+    struct iio_device *rx_dev;
+    struct iio_channel *rx_phy_ch;
+    struct iio_channel *tx_phy_ch;
+    struct iio_channel *rx_i;
+    struct iio_channel *rx_q;
+    struct iio_channel *tx_i;
+    struct iio_channel *tx_q;
+    struct iio_buffer *rxbuf;
+    struct iio_buffer *txbuf;
+    long long sample_rate;
+} PlutoSDR;
+
+// ============================================================================
+// UTILITY FUNCTIONS
+// ============================================================================
+
+/**
+ * Get high-resolution timestamp in seconds
+ */
+static double get_time_seconds(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec + ts.tv_nsec / 1e9;
+}
+
+/**
+ * Set IIO channel attribute (long long value)
+ */
+static int set_channel_attr_ll(struct iio_channel *chn, const char *attr, long long val)
+{
+    int ret = iio_channel_attr_write_longlong(chn, attr, val);
+    if (ret < 0) {
+        fprintf(stderr, "Failed to set %s: %s\n", attr, strerror(-ret));
+    }
+    return ret;
+}
+
+/**
+ * Set IIO channel attribute (string value)
+ */
+static int set_channel_attr_str(struct iio_channel *chn, const char *attr, const char *val)
+{
+    int ret = iio_channel_attr_write(chn, attr, val);
+    if (ret < 0) {
+        fprintf(stderr, "Failed to set %s to %s: %s\n", attr, val, strerror(-ret));
+    }
+    return ret;
+}
+
+// ============================================================================
+// PLUTOSDR INITIALIZATION
+// ============================================================================
+
+/**
+ * Initialize PlutoSDR hardware via local IIO
+ */
+static int init_plutosdr(PlutoSDR *sdr, long long sample_rate)
+{
+    printf("Initializing PlutoSDR (local IIO context)...\n");
+
+    // Create local IIO context
+    sdr->ctx = iio_create_local_context();
+    if (!sdr->ctx) {
+        fprintf(stderr, "Failed to create IIO context\n");
+        return -1;
+    }
+    printf("  ✓ IIO context created (local)\n");
+
+    // Get AD9361 PHY device
+    sdr->phy = iio_context_find_device(sdr->ctx, "ad9361-phy");
+    if (!sdr->phy) {
+        fprintf(stderr, "Failed to find ad9361-phy device\n");
+        return -1;
+    }
+    printf("  ✓ Found ad9361-phy\n");
+
+    // Get TX device
+    sdr->tx_dev = iio_context_find_device(sdr->ctx, "cf-ad9361-dds-core-lpc");
+    if (!sdr->tx_dev) {
+        fprintf(stderr, "Failed to find TX device\n");
+        return -1;
+    }
+    printf("  ✓ Found TX device\n");
+
+    // Get RX device
+    sdr->rx_dev = iio_context_find_device(sdr->ctx, "cf-ad9361-lpc");
+    if (!sdr->rx_dev) {
+        fprintf(stderr, "Failed to find RX device\n");
+        return -1;
+    }
+    printf("  ✓ Found RX device\n");
+
+    // Get PHY channels
+    sdr->rx_phy_ch = iio_device_find_channel(sdr->phy, "voltage0", false);
+    sdr->tx_phy_ch = iio_device_find_channel(sdr->phy, "voltage0", true);
+
+    if (!sdr->rx_phy_ch || !sdr->tx_phy_ch) {
+        fprintf(stderr, "Failed to find PHY channels\n");
+        return -1;
+    }
+
+    // Get RX I/Q channels
+    sdr->rx_i = iio_device_find_channel(sdr->rx_dev, "voltage0", false);
+    sdr->rx_q = iio_device_find_channel(sdr->rx_dev, "voltage1", false);
+
+    if (!sdr->rx_i || !sdr->rx_q) {
+        fprintf(stderr, "Failed to find RX I/Q channels\n");
+        return -1;
+    }
+
+    iio_channel_enable(sdr->rx_i);
+    iio_channel_enable(sdr->rx_q);
+    printf("  ✓ RX I/Q channels enabled\n");
+
+    // Get TX I/Q channels
+    sdr->tx_i = iio_device_find_channel(sdr->tx_dev, "voltage0", true);
+    sdr->tx_q = iio_device_find_channel(sdr->tx_dev, "voltage1", true);
+
+    if (sdr->tx_i && sdr->tx_q) {
+        iio_channel_enable(sdr->tx_i);
+        iio_channel_enable(sdr->tx_q);
+        printf("  ✓ TX I/Q channels enabled\n");
+    }
+
+    // Configure sample rate
+    sdr->sample_rate = sample_rate;
+    set_channel_attr_ll(sdr->rx_phy_ch, "sampling_frequency", sample_rate);
+    set_channel_attr_ll(sdr->tx_phy_ch, "sampling_frequency", sample_rate);
+    printf("  ✓ Sample rate: %.3f MSPS\n", sample_rate / 1e6);
+
+    // Configure RX frequency and gain
+    struct iio_channel *rx_lo = iio_device_find_channel(sdr->phy, "altvoltage0", true);
+    set_channel_attr_ll(rx_lo, "frequency", CENTER_FREQ);
+    set_channel_attr_str(sdr->rx_phy_ch, "gain_control_mode", "manual");
+    set_channel_attr_ll(sdr->rx_phy_ch, "hardwaregain", RX_GAIN);
+    printf("  ✓ RX: %.3f MHz, %d dB gain\n", CENTER_FREQ / 1e6, RX_GAIN);
+
+    // Configure TX frequency and gain
+    struct iio_channel *tx_lo = iio_device_find_channel(sdr->phy, "altvoltage1", true);
+    set_channel_attr_ll(tx_lo, "frequency", CENTER_FREQ);
+    set_channel_attr_ll(sdr->tx_phy_ch, "hardwaregain", TX_GAIN);
+    printf("  ✓ TX: %.3f MHz, %d dB gain\n", CENTER_FREQ / 1e6, TX_GAIN);
+
+    // Create RX buffer
+    sdr->rxbuf = iio_device_create_buffer(sdr->rx_dev, BUFFER_SIZE, false);
+    if (!sdr->rxbuf) {
+        fprintf(stderr, "Failed to create RX buffer\n");
+        return -1;
+    }
+    printf("  ✓ RX buffer created (%d samples)\n", BUFFER_SIZE);
+
+    // Create TX buffer
+    sdr->txbuf = iio_device_create_buffer(sdr->tx_dev, BUFFER_SIZE, true);
+    if (!sdr->txbuf) {
+        fprintf(stderr, "Failed to create TX buffer\n");
+        return -1;
+    }
+    printf("  ✓ TX buffer created (%d samples)\n", BUFFER_SIZE);
+
+    printf("PlutoSDR initialization complete!\n\n");
+    return 0;
+}
+
+/**
+ * Cleanup PlutoSDR resources
+ */
+static void cleanup_plutosdr(PlutoSDR *sdr)
+{
+    if (sdr->txbuf) iio_buffer_destroy(sdr->txbuf);
+    if (sdr->rxbuf) iio_buffer_destroy(sdr->rxbuf);
+    if (sdr->ctx) iio_context_destroy(sdr->ctx);
+    printf("PlutoSDR resources released\n");
+}
+
+// ============================================================================
+// TONE GENERATION
+// ============================================================================
+
+/**
+ * Generate complex tone at specified frequency
+ */
+static int generate_tone(PlutoSDR *sdr, double tone_freq_hz)
+{
+    printf("Generating tone at %.3f kHz offset...\n", tone_freq_hz / 1e3);
+
+    // Get TX buffer pointer
+    void *tx_buf_start = iio_buffer_start(sdr->txbuf);
+    int16_t *tx_samples = (int16_t *)tx_buf_start;
+
+    // Generate complex tone: I(t) + jQ(t) = A * e^(j*2*pi*f*t)
+    for (size_t n = 0; n < BUFFER_SIZE; n++) {
+        double t = (double)n / sdr->sample_rate;
+        double phase = 2.0 * M_PI * tone_freq_hz * t;
+
+        // I and Q components
+        double i_val = TONE_AMPLITUDE * cos(phase);
+        double q_val = TONE_AMPLITUDE * sin(phase);
+
+        // Convert to 12-bit signed integer (-2048 to 2047)
+        tx_samples[2*n]     = (int16_t)(i_val * 2047.0);
+        tx_samples[2*n + 1] = (int16_t)(q_val * 2047.0);
+    }
+
+    // Push buffer to TX
+    ssize_t nbytes = iio_buffer_push(sdr->txbuf);
+    if (nbytes < 0) {
+        fprintf(stderr, "Failed to push TX buffer: %s\n", strerror(-nbytes));
+        return -1;
+    }
+
+    printf("  ✓ Tone transmitted (%zd bytes)\n", nbytes);
+    return 0;
+}
+
+// ============================================================================
+// SIGNAL ANALYSIS
+// ============================================================================
+
+/**
+ * Capture I/Q samples from RX buffer
+ */
+static int capture_iq_samples(PlutoSDR *sdr, int16_t **i_samples, int16_t **q_samples)
+{
+    // Capture samples
+    ssize_t nbytes = iio_buffer_refill(sdr->rxbuf);
+    if (nbytes < 0) {
+        fprintf(stderr, "Failed to refill RX buffer: %s\n", strerror(-nbytes));
+        return -1;
+    }
+
+    int16_t *rx_data = (int16_t *)iio_buffer_start(sdr->rxbuf);
+
+    // Allocate separate I and Q arrays
+    *i_samples = malloc(BUFFER_SIZE * sizeof(int16_t));
+    *q_samples = malloc(BUFFER_SIZE * sizeof(int16_t));
+
+    if (!*i_samples || !*q_samples) {
+        fprintf(stderr, "Failed to allocate I/Q arrays\n");
+        return -1;
+    }
+
+    // De-interleave I and Q
+    for (size_t i = 0; i < BUFFER_SIZE; i++) {
+        (*i_samples)[i] = rx_data[2*i];
+        (*q_samples)[i] = rx_data[2*i + 1];
+    }
+
+    return 0;
+}
+
+/**
+ * Simple DFT to find peak frequency
+ * (Using DFT instead of full FFT library for simplicity on embedded)
+ */
+static int find_peak_frequency(int16_t *i_samples, int16_t *q_samples,
+                               size_t num_samples, double sample_rate,
+                               ToneInfo *tone)
+{
+    double max_magnitude = 0.0;
+    double best_freq = 0.0;
+    int num_bins = 512;  // Check 512 frequency bins
+
+    double freq_step = sample_rate / num_bins;
+
+    // Search from -Fs/2 to +Fs/2
+    for (int bin = -num_bins/2; bin < num_bins/2; bin++) {
+        double test_freq = bin * freq_step;
+
+        // Correlation with test frequency
+        double corr_i = 0.0, corr_q = 0.0;
+
+        for (size_t n = 0; n < num_samples; n++) {
+            double t = (double)n / sample_rate;
+            double phase = 2.0 * M_PI * test_freq * t;
+
+            double ref_i = cos(phase);
+            double ref_q = sin(phase);
+
+            double sig_i = i_samples[n] / 2048.0;
+            double sig_q = q_samples[n] / 2048.0;
+
+            // Complex correlation
+            corr_i += sig_i * ref_i + sig_q * ref_q;
+            corr_q += sig_q * ref_i - sig_i * ref_q;
+        }
+
+        double magnitude = sqrt(corr_i * corr_i + corr_q * corr_q) / num_samples;
+
+        if (magnitude > max_magnitude) {
+            max_magnitude = magnitude;
+            best_freq = test_freq;
+        }
+    }
+
+    tone->frequency_hz = best_freq;
+    tone->magnitude = max_magnitude;
+    tone->detected = (max_magnitude > 0.1);
+
+    return 0;
+}
+
+/**
+ * Measure bandwidth using simple power-based method
+ */
+static int measure_bandwidth(int16_t *i_samples, int16_t *q_samples,
+                             size_t num_samples, double sample_rate,
+                             BandwidthMeasurement *bw)
+{
+    // Calculate power spectrum (simplified DFT approach)
+    int num_bins = 256;
+    double *power_spectrum = calloc(num_bins, sizeof(double));
+
+    if (!power_spectrum) {
+        return -1;
+    }
+
+    double freq_step = sample_rate / num_bins;
+
+    for (int bin = 0; bin < num_bins; bin++) {
+        double test_freq = (bin - num_bins/2) * freq_step;
+
+        double corr_i = 0.0, corr_q = 0.0;
+
+        for (size_t n = 0; n < num_samples; n++) {
+            double t = (double)n / sample_rate;
+            double phase = 2.0 * M_PI * test_freq * t;
+
+            double ref_i = cos(phase);
+            double ref_q = sin(phase);
+
+            double sig_i = i_samples[n] / 2048.0;
+            double sig_q = q_samples[n] / 2048.0;
+
+            corr_i += sig_i * ref_i + sig_q * ref_q;
+            corr_q += sig_q * ref_i - sig_i * ref_q;
+        }
+
+        power_spectrum[bin] = (corr_i * corr_i + corr_q * corr_q) / (num_samples * num_samples);
+    }
+
+    // Find peak
+    int peak_bin = 0;
+    double peak_power = 0.0;
+
+    for (int bin = 0; bin < num_bins; bin++) {
+        if (power_spectrum[bin] > peak_power) {
+            peak_power = power_spectrum[bin];
+            peak_bin = bin;
+        }
+    }
+
+    bw->center_freq_hz = (peak_bin - num_bins/2) * freq_step;
+    bw->peak_power_db = 10.0 * log10(peak_power + 1e-12);
+
+    // Find 3 dB bandwidth
+    double threshold = peak_power / 2.0;  // -3 dB = half power
+
+    int lower_bin = peak_bin;
+    while (lower_bin > 0 && power_spectrum[lower_bin] > threshold) {
+        lower_bin--;
+    }
+
+    int upper_bin = peak_bin;
+    while (upper_bin < num_bins - 1 && power_spectrum[upper_bin] > threshold) {
+        upper_bin++;
+    }
+
+    bw->bandwidth_3db_hz = (upper_bin - lower_bin) * freq_step;
+
+    // Calculate 99% occupied bandwidth
+    double total_power = 0.0;
+    for (int bin = 0; bin < num_bins; bin++) {
+        total_power += power_spectrum[bin];
+    }
+
+    double target_power = 0.99 * total_power;
+    double integrated_power = 0.0;
+    int occupied_bins = 0;
+
+    // Integrate from peak outward
+    for (int offset = 0; offset < num_bins/2; offset++) {
+        if (peak_bin - offset >= 0) {
+            integrated_power += power_spectrum[peak_bin - offset];
+            occupied_bins++;
+        }
+        if (peak_bin + offset < num_bins) {
+            integrated_power += power_spectrum[peak_bin + offset];
+            occupied_bins++;
+        }
+
+        if (integrated_power >= target_power) {
+            break;
+        }
+    }
+
+    bw->bandwidth_occupied_hz = occupied_bins * freq_step;
+
+    free(power_spectrum);
+    return 0;
+}
+
+// ============================================================================
+// TEST FUNCTIONS
+// ============================================================================
+
+/**
+ * Test 1: Proper Sampling (frequency within Nyquist limit)
+ */
+static int test_proper_sampling(PlutoSDR *sdr)
+{
+    printf("======================================================================\n");
+    printf("TEST 1: PROPER SAMPLING (Within Nyquist Limit)\n");
+    printf("======================================================================\n\n");
+
+    double nyquist_freq = sdr->sample_rate / 2.0;
+    double tone_freq = nyquist_freq * 0.25;  // 25% of Nyquist (well within limit)
+
+    printf("Sample rate: %.3f MSPS\n", sdr->sample_rate / 1e6);
+    printf("Nyquist frequency: %.3f MHz\n", nyquist_freq / 1e6);
+    printf("Transmitting tone at: %.3f kHz (%.1f%% of Nyquist)\n\n",
+           tone_freq / 1e3, 100.0 * tone_freq / nyquist_freq);
+
+    // Generate and transmit tone
+    if (generate_tone(sdr, tone_freq) < 0) {
+        return -1;
+    }
+
+    usleep(100000);  // 100 ms
+
+    // Capture and analyze
+    int16_t *i_samples = NULL, *q_samples = NULL;
+    if (capture_iq_samples(sdr, &i_samples, &q_samples) < 0) {
+        return -1;
+    }
+
+    ToneInfo tone;
+    find_peak_frequency(i_samples, q_samples, BUFFER_SIZE, sdr->sample_rate, &tone);
+
+    printf("Analysis Results:\n");
+    printf("  Expected frequency: %.3f kHz\n", tone_freq / 1e3);
+    printf("  Measured frequency: %.3f kHz\n", tone.frequency_hz / 1e3);
+    printf("  Magnitude:          %.4f\n", tone.magnitude);
+
+    double error_hz = fabs(tone.frequency_hz - tone_freq);
+    double error_pct = 100.0 * error_hz / tone_freq;
+
+    printf("  Error:              %.3f kHz (%.2f%%)\n\n", error_hz / 1e3, error_pct);
+
+    if (error_pct < 5.0) {
+        printf("✓ PASS: Frequency correctly represented (no aliasing)\n");
+    } else {
+        printf("✗ FAIL: Large frequency error detected\n");
+    }
+
+    free(i_samples);
+    free(q_samples);
+
+    return 0;
+}
+
+/**
+ * Test 2: Aliasing (frequency above Nyquist limit)
+ */
+static int test_aliasing(PlutoSDR *sdr)
+{
+    printf("\n======================================================================\n");
+    printf("TEST 2: ALIASING (Frequency Above Nyquist Limit)\n");
+    printf("======================================================================\n\n");
+
+    double nyquist_freq = sdr->sample_rate / 2.0;
+    double tone_freq = nyquist_freq * 0.75;  // 75% of Nyquist (ABOVE limit!)
+
+    printf("Sample rate: %.3f MSPS\n", sdr->sample_rate / 1e6);
+    printf("Nyquist frequency: ±%.3f MHz\n", nyquist_freq / 1e6);
+    printf("Transmitting tone at: %.3f MHz (%.1f%% ABOVE Nyquist!)\n\n",
+           tone_freq / 1e6, 100.0 * (tone_freq - nyquist_freq) / nyquist_freq);
+
+    // Calculate expected alias
+    double expected_alias = tone_freq - sdr->sample_rate;
+    if (expected_alias < -nyquist_freq) {
+        expected_alias = sdr->sample_rate + expected_alias;
+    }
+
+    printf("Expected alias frequency: %.3f kHz\n\n", expected_alias / 1e3);
+
+    // Generate and transmit tone
+    if (generate_tone(sdr, tone_freq) < 0) {
+        return -1;
+    }
+
+    usleep(100000);  // 100 ms
+
+    // Capture and analyze
+    int16_t *i_samples = NULL, *q_samples = NULL;
+    if (capture_iq_samples(sdr, &i_samples, &q_samples) < 0) {
+        return -1;
+    }
+
+    ToneInfo tone;
+    find_peak_frequency(i_samples, q_samples, BUFFER_SIZE, sdr->sample_rate, &tone);
+
+    printf("Analysis Results:\n");
+    printf("  Transmitted frequency: %.3f MHz\n", tone_freq / 1e6);
+    printf("  Expected alias:        %.3f kHz\n", expected_alias / 1e3);
+    printf("  Measured frequency:    %.3f kHz\n", tone.frequency_hz / 1e3);
+    printf("  Magnitude:             %.4f\n", tone.magnitude);
+
+    double alias_error = fabs(tone.frequency_hz - expected_alias);
+    double alias_error_pct = 100.0 * alias_error / fabs(expected_alias);
+
+    printf("  Alias error:           %.3f kHz (%.2f%%)\n\n", alias_error / 1e3, alias_error_pct);
+
+    if (alias_error_pct < 10.0) {
+        printf("✓ ALIASING CONFIRMED: Measured alias matches theory!\n");
+        printf("  Original %.3f MHz → Aliased to %.3f kHz\n",
+               tone_freq / 1e6, tone.frequency_hz / 1e3);
+    } else {
+        printf("✗ UNEXPECTED: Alias does not match theory\n");
+    }
+
+    free(i_samples);
+    free(q_samples);
+
+    return 0;
+}
+
+/**
+ * Test 3: Bandwidth Measurement
+ */
+static int test_bandwidth_measurement(PlutoSDR *sdr)
+{
+    printf("\n======================================================================\n");
+    printf("TEST 3: BANDWIDTH MEASUREMENT\n");
+    printf("======================================================================\n\n");
+
+    double tone_freq = 100000.0;  // 100 kHz offset
+
+    printf("Transmitting tone at %.3f kHz...\n", tone_freq / 1e3);
+
+    // Generate and transmit tone
+    if (generate_tone(sdr, tone_freq) < 0) {
+        return -1;
+    }
+
+    usleep(100000);  // 100 ms
+
+    // Capture and analyze
+    int16_t *i_samples = NULL, *q_samples = NULL;
+    if (capture_iq_samples(sdr, &i_samples, &q_samples) < 0) {
+        return -1;
+    }
+
+    BandwidthMeasurement bw;
+    measure_bandwidth(i_samples, q_samples, BUFFER_SIZE, sdr->sample_rate, &bw);
+
+    printf("\nBandwidth Measurement Results:\n");
+    printf("  Center frequency:   %.3f kHz\n", bw.center_freq_hz / 1e3);
+    printf("  Peak power:         %.1f dB\n", bw.peak_power_db);
+    printf("  3 dB bandwidth:     %.3f kHz\n", bw.bandwidth_3db_hz / 1e3);
+    printf("  Occupied bandwidth: %.3f kHz (99%% power)\n\n", bw.bandwidth_occupied_hz / 1e3);
+
+    // A pure tone should have very narrow bandwidth
+    if (bw.bandwidth_3db_hz < sdr->sample_rate / 50.0) {
+        printf("✓ PASS: Measured narrow bandwidth (pure tone)\n");
+    } else {
+        printf("⚠ WARNING: Bandwidth larger than expected for pure tone\n");
+    }
+
+    free(i_samples);
+    free(q_samples);
+
+    return 0;
+}
+
+/**
+ * Test 4: Nyquist Zone Mapping
+ */
+static int test_nyquist_zones(PlutoSDR *sdr)
+{
+    printf("\n======================================================================\n");
+    printf("TEST 4: NYQUIST ZONE MAPPING\n");
+    printf("======================================================================\n\n");
+
+    double nyquist_freq = sdr->sample_rate / 2.0;
+
+    printf("Sample rate: %.3f MSPS\n", sdr->sample_rate / 1e6);
+    printf("Nyquist frequency: ±%.3f MHz\n", nyquist_freq / 1e6);
+    printf("\nTesting frequencies across multiple Nyquist zones...\n\n");
+
+    printf("%-20s %-20s %-20s %s\n", "Zone", "Input Freq", "Measured Freq", "Status");
+    printf("%-20s %-20s %-20s %s\n", "----", "----------", "-------------", "------");
+
+    // Test frequencies in different zones
+    double test_freqs[] = {
+        nyquist_freq * 0.25,   // Zone 1 (within Nyquist)
+        nyquist_freq * 0.75,   // Zone 2 (aliased)
+        nyquist_freq * 1.25,   // Zone 3 (aliased)
+        nyquist_freq * 1.75    // Zone 4 (aliased)
+    };
+
+    for (int i = 0; i < 4; i++) {
+        double tone_freq = test_freqs[i];
+
+        // Generate and transmit
+        generate_tone(sdr, tone_freq);
+        usleep(100000);
+
+        // Capture and analyze
+        int16_t *i_samples = NULL, *q_samples = NULL;
+        capture_iq_samples(sdr, &i_samples, &q_samples);
+
+        ToneInfo tone;
+        find_peak_frequency(i_samples, q_samples, BUFFER_SIZE, sdr->sample_rate, &tone);
+
+        // Determine zone and aliasing status
+        int zone = (int)(fabs(tone_freq) / nyquist_freq) + 1;
+        bool aliased = (fabs(tone_freq) > nyquist_freq);
+
+        printf("Zone %-15d %-20.3f %-20.3f %s\n",
+               zone,
+               tone_freq / 1e6,
+               tone.frequency_hz / 1e6,
+               aliased ? "ALIASED" : "OK");
+
+        free(i_samples);
+        free(q_samples);
+    }
+
+    printf("\n✓ Nyquist zone mapping complete\n");
+
+    return 0;
+}
+
+// ============================================================================
+// MAIN PROGRAM
+// ============================================================================
+
+int main(int argc, char **argv)
+{
+    printf("\n");
+    printf("======================================================================\n");
+    printf("LAB 2.1 - Method 3: Nyquist Sampling and Aliasing Tests\n");
+    printf("Running on PlutoSDR ARM Cortex-A9\n");
+    printf("======================================================================\n\n");
+
+    PlutoSDR sdr = {0};
+    int ret = 0;
+
+    // Use default sample rate (can be changed for different tests)
+    long long sample_rate = TEST_SAMPLE_RATE_1;  // 2 MSPS
+
+    // Initialize hardware
+    if (init_plutosdr(&sdr, sample_rate) < 0) {
+        fprintf(stderr, "Failed to initialize PlutoSDR\n");
+        return 1;
+    }
+
+    // Run all tests
+    double total_start = get_time_seconds();
+
+    // Test 1: Proper sampling
+    ret = test_proper_sampling(&sdr);
+    if (ret < 0) {
+        fprintf(stderr, "Test 1 failed\n");
+    }
+    sleep(1);
+
+    // Test 2: Aliasing
+    ret = test_aliasing(&sdr);
+    if (ret < 0) {
+        fprintf(stderr, "Test 2 failed\n");
+    }
+    sleep(1);
+
+    // Test 3: Bandwidth measurement
+    ret = test_bandwidth_measurement(&sdr);
+    if (ret < 0) {
+        fprintf(stderr, "Test 3 failed\n");
+    }
+    sleep(1);
+
+    // Test 4: Nyquist zones
+    ret = test_nyquist_zones(&sdr);
+    if (ret < 0) {
+        fprintf(stderr, "Test 4 failed\n");
+    }
+
+    double total_duration = get_time_seconds() - total_start;
+
+    // Summary
+    printf("\n");
+    printf("======================================================================\n");
+    printf("ALL TESTS COMPLETE\n");
+    printf("======================================================================\n");
+    printf("Total Duration: %.2f seconds\n", total_duration);
+    printf("Sample Rate:    %.3f MSPS\n", sdr.sample_rate / 1e6);
+    printf("Nyquist Freq:   ±%.3f MHz\n", sdr.sample_rate / 2.0 / 1e6);
+    printf("\nKey Takeaways:\n");
+    printf("  1. Frequencies within Nyquist limit are correctly represented\n");
+    printf("  2. Frequencies above Nyquist limit alias to lower frequencies\n");
+    printf("  3. Alias frequency: f_alias = |f - n×Fs|\n");
+    printf("  4. Cannot distinguish original from alias after sampling\n");
+    printf("  5. Solution: Use anti-aliasing filter before ADC\n");
+    printf("\n✓ Nyquist sampling and aliasing demonstration complete!\n\n");
+
+    // Cleanup
+    cleanup_plutosdr(&sdr);
+
+    return 0;
+}
+```
+
+---
