@@ -935,3 +935,644 @@ In this lab, you learned:
 Continue to:
 - **LAB 3.4**: BER Testing and Eye Diagrams
 - **LAB 3.5**: Pulse Shaping and Matched Filtering
+
+---
+
+## Part 3: Method 3 - Hosted Application in C (Theory Deep Dive)
+
+This section provides comprehensive theoretical foundations for implementing 16-QAM, 64-QAM, and 256-QAM modulators and demodulators in C on the PlutoSDR ARM processor.
+
+### Section 1: QAM Fundamentals
+
+**Quadrature Amplitude Modulation (QAM)** combines both amplitude and phase modulation to achieve higher spectral efficiency than pure phase modulation (PSK).
+
+#### 1.1 QAM vs PSK Comparison
+
+**PSK (Phase Shift Keying)**:
+```
+All constellation points lie on a circle (constant amplitude):
+  s_k = A · e^(jθ_k)
+
+Amplitude: A = constant
+Phase: θ_k varies (encodes data)
+
+Example QPSK:
+  Points: (1+j)/√2, (-1+j)/√2, (-1-j)/√2, (1-j)/√2
+  All at distance √1² + 1² / √2 = 1 from origin
+```
+
+**QAM (Quadrature Amplitude Modulation)**:
+```
+Constellation points fill a 2D grid (varying amplitude):
+  s_k = I_k + j·Q_k
+
+Both I and Q vary independently
+Each can take multiple amplitude levels
+
+Example 16-QAM:
+  I ∈ {-3, -1, +1, +3} (normalized)
+  Q ∈ {-3, -1, +1, +3}
+
+  Points at varying distances from origin:
+    Distance of (±1 ± j):    d = √(1² + 1²) = √2
+    Distance of (±3 ± j·3):  d = √(9 + 9) = 3√2
+    Distance of (±3 ± j):    d = √(9 + 1) = √10
+```
+
+**Why QAM is More Efficient**:
+```
+For same constellation size M, PSK and QAM transmit same bits/symbol:
+  log₂(M) bits/symbol
+
+But QAM can pack more points in given average power:
+
+16-PSK vs 16-QAM (both 4 bits/symbol):
+  16-PSK: All 16 points on circle, minimum angular separation = 2π/16 = 22.5°
+          Small angular separation → sensitive to phase noise
+
+  16-QAM: 16 points in 4×4 grid
+          Larger Euclidean distance between points → more robust
+
+  Result: 16-QAM needs ~4-5 dB less SNR than 16-PSK for same BER!
+```
+
+#### 1.2 Square QAM Constellations
+
+**General M-QAM** where M = 2^(2k) (4, 16, 64, 256, 1024, ...):
+```
+M-QAM constellation is √M × √M grid:
+
+  4-QAM:    2×2 grid  (same as QPSK)
+  16-QAM:   4×4 grid
+  64-QAM:   8×8 grid
+  256-QAM: 16×16 grid
+
+Number of I levels: L = √M
+Number of Q levels: L = √M
+
+I and Q amplitude levels (normalized):
+  levels = {-(L-1), -(L-3), ..., -1, +1, ..., +(L-3), +(L-1)}
+
+Example 16-QAM (L=4):
+  levels = {-3, -1, +1, +3}
+```
+
+**Normalization for Unit Average Power**:
+```
+To achieve average symbol energy E_avg = 1:
+
+For M-QAM, normalization factor:
+  K = √(3 / (2·(M-1)))
+
+Normalized levels:
+  I_norm = K · I
+  Q_norm = K · Q
+
+Example 16-QAM:
+  K = √(3 / (2·15)) = √(3/30) = √0.1 ≈ 0.3162
+
+  Unnormalized levels: {-3, -1, +1, +3}
+  Normalized levels: {-0.949, -0.316, +0.316, +0.949}
+
+This ensures fair power comparison between different modulation schemes!
+```
+
+### Section 2: Gray Coding for Square QAM
+
+Gray coding for QAM ensures adjacent symbols (horizontal, vertical, or diagonal neighbors) differ by only 1 bit.
+
+#### 2.1 Gray Code Mapping Strategy
+
+**For M-QAM, split bits into I and Q components**:
+```
+Total bits per symbol: n = log₂(M)
+
+For square M-QAM:
+  I-channel bits: n/2 bits
+  Q-channel bits: n/2 bits
+
+Example 16-QAM (4 bits/symbol):
+  Bits: b3 b2 b1 b0
+  I-channel: b3 b2 (2 bits → 4 levels)
+  Q-channel: b1 b0 (2 bits → 4 levels)
+
+  Each channel uses 1D Gray code independently!
+```
+
+**1D Gray Code for I and Q**:
+```
+2-bit Gray code (for 16-QAM, 4 levels):
+  Binary  Gray   Amplitude
+  00      00     -3
+  01      01     -1
+  11      11     +3
+  10      10     +1
+
+Note: Adjacent codes differ by 1 bit!
+
+This is same Gray code used for QPSK in each dimension.
+```
+
+#### 2.2 64-QAM Gray Coding
+
+**64-QAM: 6 bits/symbol = 3 bits I + 3 bits Q**:
+```
+3-bit Gray code (8 levels for I or Q):
+  Binary  Gray   Amplitude
+  000     000    -7
+  001     001    -5
+  011     011    -3
+  010     010    -1
+  110     110    +1
+  111     111    +3
+  101     101    +5
+  100     100    +7
+
+64-QAM constellation: 8×8 grid
+  Each dimension has 8 amplitude levels
+  Total: 8 × 8 = 64 constellation points
+```
+
+#### 2.3 256-QAM Gray Coding
+
+**256-QAM: 8 bits/symbol = 4 bits I + 4 bits Q**:
+```
+4-bit Gray code (16 levels for I or Q):
+  Binary  Gray   Amplitude
+  0000    0000   -15
+  0001    0001   -13
+  0011    0011   -11
+  0010    0010   -9
+  0110    0110   -7
+  0111    0111   -5
+  0101    0101   -3
+  0100    0100   -1
+  1100    1100   +1
+  1101    1101   +3
+  1111    1111   +5
+  1110    1110   +7
+  1010    1010   +9
+  1011    1011   +11
+  1001    1001   +13
+  1000    1000   +15
+
+256-QAM constellation: 16×16 grid = 256 points
+```
+
+**Gray Code Generation Algorithm** (reusable for any bit width):
+```c
+// Binary to Gray code
+uint8_t binary_to_gray(uint8_t binary) {
+    return binary ^ (binary >> 1);
+}
+
+// Gray to Binary
+uint8_t gray_to_binary(uint8_t gray) {
+    uint8_t binary = gray;
+    while (gray >>= 1) {
+        binary ^= gray;
+    }
+    return binary;
+}
+
+// Generate Gray code table for n bits
+void generate_gray_table(uint8_t *table, int n) {
+    int M = 1 << n;  // 2^n
+    for (int i = 0; i < M; i++) {
+        table[i] = binary_to_gray(i);
+    }
+}
+```
+
+### Section 3: Minimum Distance and BER Performance
+
+#### 3.1 Constellation Minimum Distance
+
+**Minimum Euclidean Distance** (critical for BER):
+```
+For normalized M-QAM:
+
+Minimum distance between adjacent points:
+  d_min = 2 · K
+
+Where K = √(3 / (2·(M-1)))
+
+Examples:
+  16-QAM:  d_min = 2 · √(3/30) = 2 · 0.3162 = 0.632
+  64-QAM:  d_min = 2 · √(3/126) = 2 · 0.1543 = 0.309
+  256-QAM: d_min = 2 · √(3/510) = 2 · 0.0768 = 0.154
+
+As M increases, d_min decreases → more sensitive to noise!
+```
+
+**Comparison with PSK**:
+```
+QPSK (M=4):    d_min = √2 ≈ 1.414
+16-PSK (M=16): d_min = 2·sin(π/16) ≈ 0.390
+16-QAM (M=16): d_min = 0.632
+
+16-QAM has ~1.6× larger d_min than 16-PSK
+  → Needs ~4 dB less SNR for same BER!
+
+This is why QAM is preferred over PSK for M > 8.
+```
+
+#### 3.2 Theoretical BER Performance
+
+**Approximate BER for Square M-QAM** (AWGN channel):
+```
+BER ≈ (2/log₂(M)) · (1 - 1/√M) · Q(√(3·E_b/N_0 · log₂(M) / (M-1)))
+
+Where:
+  Q(x) = Gaussian Q-function
+  E_b/N_0 = energy per bit to noise ratio
+  M = constellation size
+
+Simplified for high SNR:
+  BER ≈ (4/log₂(M)) · (1 - 1/√M) · Q(√(3·E_b/N_0 / (M-1)))
+```
+
+**Required SNR for BER = 10⁻⁵**:
+```
+Modulation    Bits/symbol    E_b/N_0 (dB)    Spectral Efficiency
+--------------------------------------------------------------------
+BPSK          1              9.6             0.5 bits/s/Hz
+QPSK          2              9.6             1.0 bits/s/Hz
+16-QAM        4              13.5            2.0 bits/s/Hz
+64-QAM        6              18.5            3.0 bits/s/Hz
+256-QAM       8              24.0            4.0 bits/s/Hz
+
+Higher QAM → more spectral efficient but needs better SNR!
+```
+
+**Practical SNR Requirements** (accounting for implementation losses):
+```
+Add ~3-5 dB to theoretical values for real systems:
+
+16-QAM:  ~17-18 dB SNR for BER < 10⁻⁵
+64-QAM:  ~22-23 dB SNR for BER < 10⁻⁵
+256-QAM: ~28-29 dB SNR for BER < 10⁻⁵
+
+These are achievable in:
+  - Cable modems (DOCSIS)
+  - WiFi 6/7 (802.11ax/be)
+  - LTE/5G (good signal conditions)
+  - Satellite downlink (clear sky)
+```
+
+### Section 4: Peak-to-Average Power Ratio (PAPR)
+
+#### 4.1 PAPR Definition and Impact
+
+**PAPR** measures ratio of peak to average symbol power:
+```
+PAPR = P_peak / P_average
+
+For M-QAM:
+  P_average = 1 (by normalization)
+  P_peak = |s_max|² where s_max is corner point
+
+Example 16-QAM:
+  Corner points: (±3 ± j·3) (after K scaling)
+  Peak amplitude: |3+j·3| / K = 3√2 / 0.3162 ≈ 13.42
+  Peak power: (13.42)² ≈ 180 (linear) or 22.5 dB
+
+  But after normalization K:
+    Peak point: K·(3+j·3) = 0.949 + j·0.949
+    Peak power: |0.949 + j·0.949|² = 0.9² + 0.9² ≈ 1.8
+
+  PAPR = 1.8 / 1.0 = 1.8 (linear) or 2.6 dB
+```
+
+**PAPR for Different QAM Orders**:
+```
+Modulation    PAPR (dB)
+-------------------------
+QPSK          0 dB    (constant envelope)
+16-QAM        2.6 dB
+64-QAM        3.7 dB
+256-QAM       4.2 dB
+
+Higher QAM → higher PAPR → harder to amplify linearly
+```
+
+**Why PAPR Matters**:
+```
+High PAPR requires:
+  1. Linear power amplifier (can't saturate on peaks)
+  2. Backoff from saturation → lower efficiency
+  3. Higher ADC/DAC dynamic range
+
+Example: 256-QAM with PAPR = 4.2 dB
+  If amplifier saturates at +20 dBm:
+    Must operate at +15.8 dBm average (4.2 dB backoff)
+    Efficiency drops from ~50% to ~30%
+
+This is why high-order QAM is challenging for battery-powered devices!
+```
+
+### Section 5: QAM Modulation Algorithm
+
+#### 5.1 Symbol Mapping (Bits to Complex Symbol)
+
+**Step-by-Step for M-QAM**:
+```c
+// Input: n bits [b_{n-1}, ..., b_1, b_0]
+// Output: complex symbol s = I + j·Q
+
+Step 1: Split bits into I and Q
+  n_I = n / 2  (upper bits)
+  n_Q = n / 2  (lower bits)
+
+  bits_I = bits[n-1 : n/2]
+  bits_Q = bits[n/2-1 : 0]
+
+Step 2: Gray decode to get amplitude indices
+  idx_I = gray_to_binary(bits_I)  // 0 to √M - 1
+  idx_Q = gray_to_binary(bits_Q)
+
+Step 3: Map index to amplitude level
+  level_I = 2 * idx_I - (√M - 1)  // Maps to {-(√M-1), ..., +√M-1}
+  level_Q = 2 * idx_Q - (√M - 1)
+
+Step 4: Normalize for unit average power
+  K = √(3 / (2·(M-1)))
+  I = K · level_I
+  Q = K · level_Q
+
+  s = I + j·Q
+
+Example 16-QAM, bits = [1, 0, 1, 1]:
+  bits_I = [1, 0] → Gray decode → idx_I = 3 → level_I = 2·3 - 3 = +3
+  bits_Q = [1, 1] → Gray decode → idx_Q = 2 → level_Q = 2·2 - 3 = +1
+
+  K = √(3/30) ≈ 0.3162
+  I = 0.3162 · 3 = 0.949
+  Q = 0.3162 · 1 = 0.316
+
+  s = 0.949 + j·0.316
+```
+
+### Section 6: QAM Demodulation Algorithm
+
+#### 6.1 Hard Decision (Minimum Distance)
+
+**Maximum Likelihood (ML) Detection**:
+```
+Receiver has noisy symbol: r = s + n
+
+Where:
+  s = transmitted QAM symbol
+  n = complex Gaussian noise
+
+ML decision: Choose symbol ŝ that minimizes |r - s_k|²
+
+For square QAM, this simplifies to independent I and Q decisions:
+
+  I_decision = quantize(r_I)  // Round to nearest I level
+  Q_decision = quantize(r_Q)  // Round to nearest Q level
+```
+
+**Quantization for M-QAM**:
+```c
+// Quantize I or Q component to nearest QAM level
+
+int quantize_to_qam_level(double value, int sqrt_M, double K) {
+    // De-normalize
+    double level = value / K;
+
+    // Levels are: -(√M-1), -(√M-3), ..., -1, +1, ..., +(√M-1)
+    // Thresholds are midpoints: ..., -2, 0, +2, ...
+
+    // Round to nearest odd integer
+    int quantized_level;
+    if (level > 0) {
+        quantized_level = (int)(level + 1.0) | 1;  // Force odd
+    } else {
+        quantized_level = (int)(level - 1.0) | 1;
+    }
+
+    // Clip to valid range
+    int max_level = sqrt_M - 1;
+    if (quantized_level > max_level) quantized_level = max_level;
+    if (quantized_level < -max_level) quantized_level = -max_level;
+
+    return quantized_level;
+}
+
+// Map quantized level to index
+int level_to_index(int level, int sqrt_M) {
+    // level ∈ {-(√M-1), -(√M-3), ..., +√M-1}
+    // index ∈ {0, 1, ..., √M-1}
+    return (level + (sqrt_M - 1)) / 2;
+}
+
+// Demodulation process
+void demodulate_qam(complex double r, int M, double K,
+                    uint8_t *bits_I, uint8_t *bits_Q) {
+    int sqrt_M = (int)sqrt(M);
+
+    // Quantize I and Q
+    int level_I = quantize_to_qam_level(creal(r), sqrt_M, K);
+    int level_Q = quantize_to_qam_level(cimag(r), sqrt_M, K);
+
+    // Convert to indices
+    int idx_I = level_to_index(level_I, sqrt_M);
+    int idx_Q = level_to_index(level_Q, sqrt_M);
+
+    // Gray encode (Binary to Gray)
+    *bits_I = binary_to_gray(idx_I);
+    *bits_Q = binary_to_gray(idx_Q);
+}
+```
+
+### Section 7: Practical PlutoSDR Considerations
+
+#### 7.1 Dynamic Range Requirements
+
+**ADC/DAC Bit Depth**:
+```
+PlutoSDR AD9361 uses 12-bit ADC/DAC
+
+Effective bits for QAM:
+  16-QAM:  needs ~8-9 bits (4 I levels × 4 Q levels)
+  64-QAM:  needs ~10-11 bits (8 × 8)
+  256-QAM: needs ~12-13 bits (16 × 16)
+
+256-QAM is at the limit of PlutoSDR's 12-bit converters!
+  - Must use careful gain scaling
+  - AGC must be very stable
+  - Any non-linearity causes constellation distortion
+```
+
+#### 7.2 I/Q Imbalance
+
+**I/Q Mismatch Effects on QAM**:
+```
+Ideal QAM assumes perfect I/Q balance:
+  - Same gain on I and Q paths
+  - Exactly 90° phase difference
+  - Same DC offset
+
+Reality:
+  - Gain imbalance: g_I ≠ g_Q (typically <1% error)
+  - Phase error: φ ≠ 90° (typically <2° error)
+  - DC offset: non-zero DC in I or Q
+
+Effects on constellation:
+  - Gain imbalance: constellation "squished" in one direction
+  - Phase error: constellation "sheared" (not rectangular)
+  - DC offset: entire constellation shifted
+
+For 256-QAM, even 0.5 dB gain imbalance can cause significant BER degradation!
+
+Solution: I/Q calibration using known pilot symbols
+```
+
+#### 7.3 Carrier Frequency Offset (CFO)
+
+**CFO Causes Constellation Rotation**:
+```
+Transmitted: s(t) = (I + jQ) · e^(j2πf_c t)
+Received:    r(t) = (I + jQ) · e^(j2π(f_c + Δf)t)
+
+After downconversion with LO at f_c:
+  r_bb(t) = (I + jQ) · e^(j2πΔf·t)
+
+CFO Δf causes time-varying phase rotation!
+
+For symbol period T_s:
+  Phase rotation per symbol: θ = 2π·Δf·T_s
+
+Example: 100 ksps symbol rate, Δf = 100 Hz
+  T_s = 10 µs
+  θ = 2π · 100 · 10^-5 = 0.0063 rad = 0.36°
+
+For QPSK: 0.36° rotation → negligible
+For 256-QAM: 0.36° → noticeable BER degradation!
+
+Solution: CFO estimation and compensation
+  - Use preamble with known symbols
+  - Pilot-aided tracking
+  - Decision-directed (use detected symbols)
+```
+
+### Section 8: C Implementation Strategy
+
+#### 8.1 Data Structures
+
+**Optimized for Multiple QAM Orders**:
+```c
+// QAM configuration
+typedef struct {
+    int M;                  // 16, 64, or 256
+    int sqrt_M;             // 4, 8, or 16
+    int bits_per_symbol;    // 4, 6, or 8
+    double K;               // Normalization factor
+    uint8_t *gray_map_i;    // Gray code for I-channel
+    uint8_t *gray_map_q;    // Gray code for Q-channel
+    uint8_t *gray_demap_i;  // Reverse mapping
+    uint8_t *gray_demap_q;
+    int *levels;            // Amplitude levels array
+} QAMModem;
+
+// Modulated signal (same as M-PSK)
+typedef struct {
+    uint8_t *bits;
+    complex double *symbols;
+    complex double *samples;
+    size_t num_bits;
+    size_t num_symbols;
+    size_t num_samples;
+} ModulatedSignal;
+
+// Demodulation result (same as M-PSK)
+typedef struct {
+    uint8_t *demod_bits;
+    size_t num_bits;
+    double ber;
+    int num_errors;
+} DemodResult;
+```
+
+#### 8.2 Memory Optimization
+
+**Constellation Storage**:
+```c
+// Option 1: Pre-compute full constellation (memory-intensive)
+complex double constellation[256];  // For 256-QAM
+
+// Option 2: Compute on-the-fly (CPU-intensive but saves memory)
+complex double get_qam_symbol(uint8_t bits, int M, double K) {
+    // Decode bits → I and Q levels → symbol
+    // (as shown in modulation algorithm)
+}
+
+// Option 3: Store only I and Q levels (memory-efficient)
+double i_levels[16];  // Max for 256-QAM
+double q_levels[16];
+
+complex double symbol = i_levels[idx_i] + I * q_levels[idx_q];
+
+Recommendation: Option 3 for embedded systems
+  - 256-QAM: 16+16 = 32 doubles = 256 bytes
+  - vs. 256 complex doubles = 4096 bytes
+  - 16× memory savings!
+```
+
+#### 8.3 Performance Optimization
+
+**NEON SIMD for QAM**:
+```c
+// Batch symbol generation using NEON
+void modulate_qam_neon(const uint8_t *bits, complex double *symbols,
+                       size_t num_symbols, const QAMModem *modem) {
+    // Process 4 symbols at a time using NEON
+    // - Pack 4 I levels into NEON register
+    // - Pack 4 Q levels into NEON register
+    // - Vectorized multiply by K
+    // - Interleave I and Q to get complex symbols
+
+    // Achieves ~4× speedup over scalar code
+}
+```
+
+**Expected Performance**:
+```
+For 100 ksps symbol rate:
+
+16-QAM:  ~2-3% CPU (similar to QPSK)
+64-QAM:  ~3-4% CPU (more complex Gray decoding)
+256-QAM: ~4-5% CPU (16×16 Gray tables)
+
+With NEON: ~1-2% CPU for all QAM orders
+
+Memory footprint:
+  Code: ~35-40 KB
+  Data: ~10-15 KB (Gray tables, RRC filter)
+  Runtime: ~100-200 KB (buffers for 256 bits @ 256-QAM)
+```
+
+---
+
+**Summary of Theory**:
+
+This theory section covered:
+
+✅ **QAM Fundamentals**: Combining amplitude and phase, superiority over high-order PSK
+
+✅ **Square Constellations**: 16/64/256-QAM structure, normalization for unit power
+
+✅ **Gray Coding**: Independent 1D Gray code for I and Q channels, generation algorithms
+
+✅ **Performance**: Minimum distance calculations, BER vs SNR requirements
+
+✅ **PAPR**: Peak-to-average power ratio, impact on amplifier efficiency
+
+✅ **Algorithms**: Modulation (bits → symbol) and demodulation (symbol → bits)
+
+✅ **PlutoSDR Specifics**: ADC resolution limits, I/Q imbalance, CFO effects
+
+✅ **C Implementation**: Optimized data structures, memory-efficient design, NEON acceleration
+
+**Next**: Part 4 will provide complete C source code implementing 16-QAM, 64-QAM, and 256-QAM modulators and demodulators!
