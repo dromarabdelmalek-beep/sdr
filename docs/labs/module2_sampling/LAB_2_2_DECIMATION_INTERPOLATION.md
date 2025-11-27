@@ -3603,6 +3603,621 @@ At this point you should have:
 
 ---
 
+## Part 8: Deployment and Integration Guide
+
+This final section covers deploying the binary to PlutoSDR and integrating decimation/interpolation concepts with other labs.
+
+### Overview
+
+You'll deploy the `lab2_2_hosted` binary to PlutoSDR via SSH/SCP and run comprehensive tests demonstrating:
+- Decimation with/without anti-aliasing
+- Interpolation with/without anti-imaging
+- Rational resampling (L/M)
+- Polyphase decimation efficiency
+- Integration with previous labs
+
+**Prerequisites**:
+- ✓ Compiled ARM binary `lab2_2_hosted` from Part 7
+- ✓ PlutoSDR connected via USB
+- ✓ SSH access (password: `analog`)
+- ✓ libiio library deployed (from LAB 1.2/1.3)
+
+---
+
+### STEP 1: Deploy Binary to PlutoSDR
+
+Transfer the compiled binary using SCP.
+
+```bash
+# On your PC (from ~/pluto_labs/lab2_2_method3/):
+scp lab2_2_hosted root@192.168.2.1:/root/
+# Password: analog
+```
+
+**Expected output**:
+```
+lab2_2_hosted                                 100%   34KB   3.4MB/s   00:00
+```
+
+**Verify deployment**:
+```bash
+# SSH to PlutoSDR:
+ssh root@192.168.2.1
+# Password: analog
+
+# Check binary:
+ls -lh /root/lab2_2_hosted
+# Should show: -rwxr-xr-x 1 root root 34.0K /root/lab2_2_hosted
+```
+
+---
+
+### STEP 2: Run LAB 2.2 on PlutoSDR
+
+Execute the complete test suite.
+
+```bash
+# On PlutoSDR:
+cd /root
+./lab2_2_hosted
+```
+
+**Expected output** (complete test suite):
+
+```
+======================================
+LAB 2.2 - Decimation & Interpolation
+Method 3: Hosted Application (C)
+======================================
+
+PlutoSDR initialized successfully
+  Sample Rate: 4.000 MHz
+  Center Frequency: 915.000 MHz
+  TX Gain: 0.0 dB
+  RX Gain: 60.0 dB
+
+========================================
+Test 1: Decimation WITHOUT Anti-Aliasing (M=4)
+========================================
+Decimation factor: M = 4
+  Input rate: 4.000 MHz
+  Output rate: 1.000 MHz
+  Anti-aliasing filter: DISABLED
+
+Generating tone at 500.000 kHz...
+Capturing 65536 I/Q samples...
+Decimated to 16384 samples
+
+Analyzing spectrum...
+  Peak frequency: 498.234 kHz
+  Peak power: -11.2 dBFS
+  New Nyquist frequency: 500.000 kHz
+
+Aliasing Analysis:
+  Nyquist before: 2.000 MHz
+  Nyquist after: 500.000 kHz
+  Alias bins detected: 3
+
+  Average alias power: -28.7 dBFS
+
+Result: ALIASING DETECTED (as expected without filter)
+  Warning: High-frequency components folded into baseband!
+
+========================================
+Test 2: Decimation WITH Anti-Aliasing (M=4)
+========================================
+Decimation factor: M = 4
+  Input rate: 4.000 MHz
+  Output rate: 1.000 MHz
+  Anti-aliasing filter: ENABLED (64 taps)
+
+Generating tone at 500.000 kHz...
+Capturing 65536 I/Q samples...
+Applying anti-aliasing filter...
+Decimated to 16384 samples
+
+Analyzing spectrum...
+  Peak frequency: 499.876 kHz
+  Peak power: -12.1 dBFS
+  New Nyquist frequency: 500.000 kHz
+
+Aliasing Analysis:
+  Nyquist before: 2.000 MHz
+  Nyquist after: 500.000 kHz
+  Alias bins detected: 0
+
+Result: PASS - No aliasing detected (filter effective)
+  Signal properly preserved after decimation
+
+========================================
+Test 3: Interpolation WITHOUT Anti-Imaging (L=4)
+========================================
+Interpolation factor: L = 4
+  Input rate: 4.000 MHz
+  Output rate: 16.000 MHz
+  Anti-imaging filter: DISABLED
+
+Generating tone at 500.000 kHz...
+Capturing 65536 I/Q samples...
+Interpolated to 262144 samples
+
+Analyzing spectrum for images...
+  Baseband frequency: 500.000 kHz
+  Number of images detected: 3
+
+Image Details:
+  Image 1: 4.500 kHz, Power: -13.2 dBFS, Suppression: 0.9 dB
+  Image 2: 8.498 kHz, Power: -14.1 dBFS, Suppression: 1.8 dB
+  Image 3: 12.501 kHz, Power: -15.3 dBFS, Suppression: 3.0 dB
+
+Result: IMAGING DETECTED (as expected without filter)
+  Warning: Spectral replicas present!
+
+========================================
+Test 4: Interpolation WITH Anti-Imaging (L=4)
+========================================
+Interpolation factor: L = 4
+  Input rate: 4.000 MHz
+  Output rate: 16.000 MHz
+  Anti-imaging filter: ENABLED (64 taps, gain = 4)
+
+Generating tone at 500.000 kHz...
+Capturing 65536 I/Q samples...
+Applying anti-imaging filter...
+Filtered interpolated signal
+
+Analyzing spectrum for images...
+  Baseband frequency: 500.000 kHz
+  Number of images detected: 0
+
+Result: PASS - No images detected (filter effective)
+  Images successfully removed by anti-imaging filter
+
+========================================
+Test 5: Rational Resampling (L=3, M=2)
+========================================
+Rational resampling: L/M = 3/2
+  Simplified: L/M = 3/2 (GCD = 1)
+  Input rate: 4.000 MHz
+  Output rate: 6.000 MHz
+
+Process:
+  Step 1: Interpolate by L = 3
+  Step 2: Low-pass filter
+  Step 3: Decimate by M = 2
+
+Generating tone at 500.000 kHz...
+Capturing 65536 I/Q samples...
+Step 1: Interpolating by 3...
+Step 2: Applying low-pass filter...
+Step 3: Decimating by 2...
+Final output: 98304 samples
+
+Analyzing output spectrum...
+  Expected tone frequency: 500.000 kHz
+  Measured tone frequency: 499.712 kHz
+  Peak power: -13.4 dBFS
+  Frequency error: 0.06%
+
+Result: PASS - Signal correctly resampled
+  Rational resampling successful!
+
+========================================
+Test 6: Polyphase Decimation (M=4)
+========================================
+Polyphase decimation: M = 4
+  Input rate: 4.000 MHz
+  Output rate: 1.000 MHz
+  Filter taps: 64
+  Polyphase filters: 4 (each with 16 taps)
+
+Generating tone at 500.000 kHz...
+Capturing 65536 I/Q samples...
+Performing polyphase decimation...
+Decimated to 16384 samples
+
+Analyzing output spectrum...
+  Peak frequency: 499.934 kHz
+  Peak power: -12.3 dBFS
+
+Computational Analysis:
+  Naive method: 64 multiplies per output sample
+  Polyphase method: 16 multiplies per output sample
+  Speedup: 4× faster
+
+Result: PASS - Polyphase decimation successful
+  Computational efficiency: 4× improvement
+
+========================================
+All tests completed!
+========================================
+```
+
+---
+
+### STEP 3: Interpret Results
+
+#### **Test 1: Decimation WITHOUT Filter**
+
+**Key Observations**:
+- ✓ Aliasing detected (3 alias bins)
+- ✓ Average alias power: -28.7 dBFS
+- ⚠️ Demonstrates problem when decimating without anti-aliasing
+
+**Why it matters**: High-frequency noise or interferers fold into baseband, corrupting the signal.
+
+**Real-world impact**: GPS receiver samples at 8 MHz. If jammer at 6 MHz is not filtered before decimating to 2 MHz, it aliases to |6-4| = 2 MHz, appearing as false signal.
+
+#### **Test 2: Decimation WITH Filter**
+
+**Key Observations**:
+- ✓ No aliasing detected
+- ✓ Signal power preserved (-12.1 dBFS)
+- ✓ Frequency accuracy: 99.98% (error < 0.02%)
+
+**Filter effectiveness**: 64-tap LPF attenuates frequencies > 500 kHz by >60 dB before decimation.
+
+**Production use**: This is how AD9361 decimation chain works - every stage has anti-aliasing filter.
+
+#### **Test 3: Interpolation WITHOUT Filter**
+
+**Key Observations**:
+- ⚠️ 3 images detected
+- ⚠️ Image suppression: only 0.9-3.0 dB
+- ⚠️ Spectral purity violated
+
+**Why it matters**: DAC outputs all images → RF spectrum mask violations, interference with adjacent channels.
+
+**FCC compliance**: Transmitter must suppress out-of-band emissions by >60 dB. Without anti-imaging filter, fails compliance.
+
+#### **Test 4: Interpolation WITH Filter**
+
+**Key Observations**:
+- ✓ No images detected
+- ✓ Clean spectrum (images attenuated >60 dB)
+- ✓ Suitable for transmission
+
+**Filter gain**: Gain = L = 4 compensates for energy loss from zero-insertion.
+
+**Spectral purity**: Meets FCC emission mask requirements.
+
+#### **Test 5: Rational Resampling**
+
+**Key Observations**:
+- ✓ Arbitrary rate conversion (4 MHz → 6 MHz)
+- ✓ GCD optimization (reduces computation)
+- ✓ Frequency error < 0.1%
+
+**Use case**: LTE eNodeB needs 30.72 MSPS, but ADC outputs 122.88 MSPS. Rational resampling by 1/4 (or optimized L=1, M=4).
+
+**Efficiency**: GCD(3,2) = 1 (already simplified). For 12 MHz → 8 MHz, GCD(12,8) = 4, so use L=2, M=3 (4× fewer operations).
+
+#### **Test 6: Polyphase Decimation**
+
+**Key Observations**:
+- ✓ 4× computational speedup (64 → 16 multiplies/output)
+- ✓ Identical results to naive decimation
+- ✓ Critical for real-time processing
+
+**Performance impact**:
+```
+Naive decimation (M=4, 64-tap FIR):
+  64 multiplies × 1 MSPS = 64 million ops/sec
+
+Polyphase decimation:
+  16 multiplies × 1 MSPS = 16 million ops/sec (4× faster!)
+```
+
+**Real-world use**: All modern SDRs (PlutoSDR, USRP, HackRF) use polyphase decimation internally.
+
+---
+
+### STEP 4: Troubleshooting
+
+#### **Issue 1: "Buffer refill failed" error**
+
+```
+Capturing 65536 I/Q samples...
+Error: iio_buffer_refill() failed: -110
+```
+
+**Diagnosis**: USB timeout (error -110).
+
+**Solution**: Reduce buffer size in source code:
+```c
+// Change from:
+#define BUFFER_SIZE 65536
+
+// To:
+#define BUFFER_SIZE 16384
+```
+
+Then re-compile and re-deploy.
+
+#### **Issue 2: All tests show "FAIL"**
+
+```
+Result: FAIL
+  Expected tone frequency: 500.00 kHz
+  Measured tone frequency: 0.00 kHz
+```
+
+**Diagnosis**: TX not working (no loopback signal).
+
+**Solution 1**: Check TX/RX loopback cable (TX1A → RX1A).
+
+**Solution 2**: Verify TX DDS is enabled in code (it is by default).
+
+**Solution 3**: Increase RX gain:
+```bash
+# Edit source code, change:
+#define RX_GAIN_DB 60.0  // Try 70.0 or 73.0
+```
+
+#### **Issue 3: Interpolation tests crash**
+
+```
+Interpolating by 4...
+Segmentation fault
+```
+
+**Diagnosis**: Memory allocation failure (trying to allocate BUFFER_SIZE × L).
+
+**Solution**: PlutoSDR has limited RAM (~512 MB). Reduce buffer size:
+```c
+#define BUFFER_SIZE 16384  // Instead of 65536
+```
+
+---
+
+### STEP 5: Integration Examples
+
+#### **Integration 1: Multi-Rate Receiver (LAB 2.1 + LAB 2.2)**
+
+**Goal**: Implement wideband receiver with variable output rates.
+
+**Pattern**:
+```c
+// Scenario: Wideband capture at 20 MHz, process at 2.5 MHz
+
+// From LAB 2.1: Capture at high rate
+set_sample_rate(sdr, 20000000.0);  // 20 MHz
+capture_iq_samples(sdr, &i_wideband, &q_wideband);
+
+// From LAB 2.2: Decimate by M=8 with anti-aliasing
+double decimation_factor = 8;
+int16_t *i_filtered = malloc(BUFFER_SIZE * sizeof(int16_t));
+int16_t *q_filtered = malloc(BUFFER_SIZE * sizeof(int16_t));
+
+// Anti-aliasing filter (cutoff at 2.5/2 = 1.25 MHz)
+apply_fir_filter(i_wideband, i_filtered, BUFFER_SIZE, lpf_coeffs, FIR_TAPS);
+apply_fir_filter(q_wideband, q_filtered, BUFFER_SIZE, lpf_coeffs, FIR_TAPS);
+
+// Decimate
+int16_t *i_decimated = malloc((BUFFER_SIZE/decimation_factor) * sizeof(int16_t));
+int16_t *q_decimated = malloc((BUFFER_SIZE/decimation_factor) * sizeof(int16_t));
+
+int num_out = decimate_signal(i_filtered, i_decimated, BUFFER_SIZE, decimation_factor);
+decimate_signal(q_filtered, q_decimated, BUFFER_SIZE, decimation_factor);
+
+// From LAB 2.1: Verify no aliasing
+AliasingAnalysis aliasing;
+detect_aliasing(i_decimated, q_decimated, num_out, 2500000.0, 1250000.0, &aliasing);
+
+printf("Decimation from 20 MHz to 2.5 MHz:\n");
+printf("  Aliasing detected: %s\n", aliasing.aliasing_detected ? "YES (ERROR!)" : "NO (OK)");
+```
+
+**Use case**: Spectrum analyzer captures 20 MHz bandwidth, but signal of interest is only 2 MHz wide. Decimate to save processing power.
+
+#### **Integration 2: LTE Sample Rate Conversion (LAB 2.2 Rational Resampling)**
+
+**Goal**: Convert from ADC rate to LTE-compliant rate.
+
+**Pattern**:
+```c
+// LTE 20 MHz bandwidth requires 30.72 MSPS
+// PlutoSDR ADC runs at 61.44 MSPS
+
+// Rational resampling: 61.44 → 30.72 MSPS
+// Ratio: 30.72 / 61.44 = 1/2
+
+double input_rate = 61440000.0;
+double output_rate = 30720000.0;
+
+int L = 1;  // No interpolation needed
+int M = 2;  // Decimate by 2
+
+// Apply halfband filter (optimized for M=2)
+apply_fir_filter(i_samples, i_filtered, BUFFER_SIZE, hb_coeffs, HB_TAPS);
+apply_fir_filter(q_samples, q_filtered, BUFFER_SIZE, hb_coeffs, HB_TAPS);
+
+// Decimate
+int num_out = decimate_signal(i_filtered, i_decimated, BUFFER_SIZE, M);
+decimate_signal(q_filtered, q_decimated, BUFFER_SIZE, M);
+
+printf("LTE Sample Rate Conversion:\n");
+printf("  Input: %.2f MSPS\n", input_rate / 1e6);
+printf("  Output: %.2f MSPS\n", (input_rate / M) / 1e6);
+printf("  LTE compliant: %s\n", (fabs((input_rate/M) - output_rate) < 1.0) ? "YES" : "NO");
+```
+
+**Why it matters**: 3GPP LTE standard mandates specific sample rates (30.72 MSPS for 20 MHz BW). Non-compliant rates cause interoperability issues.
+
+#### **Integration 3: Audio Resampling (8 kHz ↔ 48 kHz)**
+
+**Goal**: Convert between different audio sample rates.
+
+**Pattern**:
+```c
+// Scenario: Telephone audio (8 kHz) → DAC output (48 kHz)
+// Ratio: 48/8 = 6/1
+
+int L = 6;  // Interpolate by 6
+int M = 1;  // No decimation
+
+// GCD optimization
+int g = gcd(L, M);  // gcd(6,1) = 1 (already simplified)
+
+// Interpolate
+int16_t *audio_interp = malloc((BUFFER_SIZE * L) * sizeof(int16_t));
+int num_interp = interpolate_signal(audio_8khz, audio_interp, BUFFER_SIZE, L);
+
+// Anti-imaging filter (cutoff at 4 kHz, original Nyquist)
+int16_t *audio_filtered = malloc(num_interp * sizeof(int16_t));
+apply_fir_filter_interp(audio_interp, audio_filtered, num_interp, lpf_coeffs, FIR_TAPS, L);
+
+printf("Audio Resampling:\n");
+printf("  Input: 8 kHz (telephone)\n");
+printf("  Output: 48 kHz (DAC)\n");
+printf("  Interpolation factor: %d\n", L);
+printf("  Output samples: %d\n", num_interp);
+```
+
+**Use case**: VoIP phone receives 8 kHz audio but sound card expects 48 kHz. Interpolation provides smooth upsampling.
+
+#### **Integration 4: AD9361 Multi-Stage Analysis**
+
+**Goal**: Understand PlutoSDR's internal decimation chain.
+
+**Pattern**:
+```c
+// AD9361 RX chain: 61.44 MSPS → 2.048 MSPS
+// HB3 (÷3) → HB2 (÷2) → HB1 (÷2) → FIR (÷2)
+
+double adc_rate = 61440000.0;
+
+// Stage 1: HB3 decimator (÷3)
+double stage1_rate = adc_rate / 3;  // 20.48 MSPS
+printf("Stage 1 (HB3 ÷3): %.2f MSPS → %.2f MSPS\n", adc_rate/1e6, stage1_rate/1e6);
+
+// Stage 2: HB2 decimator (÷2)
+double stage2_rate = stage1_rate / 2;  // 10.24 MSPS
+printf("Stage 2 (HB2 ÷2): %.2f MSPS → %.2f MSPS\n", stage1_rate/1e6, stage2_rate/1e6);
+
+// Stage 3: HB1 decimator (÷2)
+double stage3_rate = stage2_rate / 2;  // 5.12 MSPS
+printf("Stage 3 (HB1 ÷2): %.2f MSPS → %.2f MSPS\n", stage2_rate/1e6, stage3_rate/1e6);
+
+// Stage 4: RFIR decimator (÷2)
+double output_rate = stage3_rate / 2;  // 2.56 MSPS
+printf("Stage 4 (RFIR ÷2): %.2f MSPS → %.2f MSPS\n", stage3_rate/1e6, output_rate/1e6);
+
+printf("\nTotal decimation: ÷%d\n", (int)(adc_rate / output_rate));
+printf("Each stage has anti-aliasing filter (47-128 taps)\n");
+```
+
+**Output**:
+```
+Stage 1 (HB3 ÷3): 61.44 MSPS → 20.48 MSPS
+Stage 2 (HB2 ÷2): 20.48 MSPS → 10.24 MSPS
+Stage 3 (HB1 ÷2): 10.24 MSPS → 5.12 MSPS
+Stage 4 (RFIR ÷2): 5.12 MSPS → 2.56 MSPS
+
+Total decimation: ÷24
+Each stage has anti-aliasing filter (47-128 taps)
+```
+
+**Why multi-stage?**: Single-stage ÷24 decimation would require ~5000-tap FIR filter (impractical). Multi-stage uses only 47+47+47+128 = 269 taps total.
+
+---
+
+### STEP 6: Performance Benchmarking
+
+Save results to file for analysis.
+
+```bash
+# On PlutoSDR:
+./lab2_2_hosted > lab2_2_results.txt 2>&1
+
+# View results:
+cat lab2_2_results.txt | grep "Result:"
+```
+
+**Expected summary**:
+```
+Result: ALIASING DETECTED (as expected without filter)
+Result: PASS - No aliasing detected (filter effective)
+Result: IMAGING DETECTED (as expected without filter)
+Result: PASS - No images detected (filter effective)
+Result: PASS - Signal correctly resampled
+Result: PASS - Polyphase decimation successful
+```
+
+**Retrieve to PC**:
+```bash
+# On your PC:
+scp root@192.168.2.1:/root/lab2_2_results.txt ~/pluto_labs/lab2_2_method3/
+```
+
+---
+
+### Summary
+
+**What you learned**:
+- ✓ Deploy ARM binaries to PlutoSDR
+- ✓ Demonstrate aliasing when decimating without filter
+- ✓ Prevent aliasing with anti-aliasing filters
+- ✓ Demonstrate imaging when interpolating without filter
+- ✓ Remove images with anti-imaging filters
+- ✓ Perform rational resampling (L/M) for arbitrary rate conversion
+- ✓ Achieve 4× speedup with polyphase decimation
+- ✓ Integrate multi-rate processing with other labs
+
+**Key takeaways**:
+1. **Always use anti-aliasing filter before decimation** → prevents spectral folding
+2. **Always use anti-imaging filter after interpolation** → meets FCC emission masks
+3. **Optimize L/M with GCD** → reduces computation by up to 10×
+4. **Use polyphase decimation** → M× speedup for M-fold decimation
+5. **Multi-stage decimation** → reduces total filter complexity by 10-100×
+
+**Real-world applications demonstrated**:
+- GPS receiver (wideband capture → narrowband processing)
+- LTE eNodeB (122.88 MSPS → 30.72 MSPS)
+- Audio resampling (8 kHz telephone → 48 kHz DAC)
+- PlutoSDR AD9361 multi-stage decimation chain
+
+**Next lab**: LAB 2.3 - Quantization and ADC Resolution
+
+---
+
+## LAB 2.2 Method 3 Complete! ✓
+
+You now have mastery of:
+- ✅ **Decimation theory**: Anti-aliasing filter design, Nyquist rate changes
+- ✅ **Interpolation theory**: Zero-insertion, anti-imaging filters, gain compensation
+- ✅ **Rational resampling**: L/M ratios, GCD optimization
+- ✅ **Polyphase filters**: M× computational savings
+- ✅ **AD9361 architecture**: Multi-stage decimation chain
+- ✅ **Implementation**: ~950 lines of production C code
+- ✅ **Compilation**: Cross-compilation for ARM with optimization
+- ✅ **Deployment**: SSH/SCP workflow
+- ✅ **Integration**: Multi-rate receiver patterns
+
+**Files created**:
+- `lab2_2_method3_hosted.c` (~950 lines) - Complete C source
+- `compile_lab2_2.sh` - Automated build script
+- `lab2_2_hosted` - ARM binary (~34 KB)
+- `lab2_2_results.txt` - Test results
+
+**SDR terms covered**:
+- Decimation, Interpolation, Resampling, Sample Rate Conversion
+- Anti-Aliasing Filter, Anti-Imaging Filter
+- Polyphase Decomposition, Polyphase Filter Banks
+- Halfband Filter, FIR Filter, Kaiser Window
+- Rational Resampling, GCD (Greatest Common Divisor)
+- Multi-Stage Decimation, Cascaded Integrator-Comb (CIC)
+- AD9361 Decimation Chain (HB3, HB2, HB1, RFIR)
+- Spectral Folding, Spectral Images, Image Suppression
+- Computational Efficiency, Multiply-Accumulate (MAC)
+
+**Ready for**:
+- LAB 2.3: Quantization and ADC Resolution
+- LAB 3.x: Modulation schemes with proper sample rate conversion
+- Advanced multi-rate SDR systems
+
+---
+
 ## References
 
 1. **Multirate Signal Processing**:
