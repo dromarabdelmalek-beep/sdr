@@ -2957,32 +2957,649 @@ static int test_polyphase_decimation(PlutoSDR *sdr, int M)
 
 ---
 
-Now continue to Part 7 (Compilation Guide) in the next response.
+---
 
-## Part 7: Compilation Guide
+## Part 7: Step-by-Step Compilation Guide
 
-(To be added in next commit...)
-   - Requires anti-aliasing filter BEFORE downsampling
-   - Prevents high frequencies from aliasing into baseband
+This section provides detailed instructions for cross-compiling the LAB 2.2 C application for PlutoSDR's ARM processor.
 
-✅ **Interpolation (L)**: Increase sample rate by factor L
-   - Insert L-1 zeros between samples
-   - Requires anti-imaging filter AFTER zero-insertion
-   - Removes spectral replicas
+### Overview
 
-✅ **Rational Resampling (L/M)**: Arbitrary rate conversion
-   - Upsample by L, filter, downsample by M
-   - Used for non-integer rate ratios
+You'll compile the ~950-line C application on your x86 PC to produce an ARM binary that runs on PlutoSDR. The compilation process involves:
+- **Cross-compilation**: Using ARM GCC toolchain for ARM Cortex-A9
+- **Linking libraries**: libiio (Industrial I/O), libm (math), libpthread (threads)
+- **Optimization**: -O2 flag for 2-3× performance improvement
+- **Binary verification**: Ensuring correct architecture and dependencies
 
-✅ **Polyphase Filters**: Efficient implementation
-   - Exploit downsampling to reduce computation
-   - M× speedup for M-fold decimation
-   - Used in all practical SDR systems
+**Prerequisites**:
+- ARM cross-compiler installed (arm-linux-gnueabihf-gcc)
+- ARM-compiled libiio library at `/opt/arm-libs/`
+- Source code from Part 6 saved as `lab2_2_method3_hosted.c`
 
-✅ **PlutoSDR Multi-Stage Chain**:
-   - AD9361 uses HB3 → HB2 → HB1 → RFIR
-   - Supports 521 kSPS to 61.44 MSPS
-   - Automatic anti-aliasing at each stage
+---
+
+### STEP 1: Prepare Workspace
+
+Create a dedicated directory for LAB 2.2 compilation.
+
+```bash
+# On your PC:
+mkdir -p ~/pluto_labs/lab2_2_method3
+cd ~/pluto_labs/lab2_2_method3
+```
+
+**Directory structure**:
+```
+~/pluto_labs/lab2_2_method3/
+├── lab2_2_method3_hosted.c    (source code, ~950 lines)
+├── compile_lab2_2.sh          (build script)
+└── lab2_2_hosted              (ARM binary, after compilation)
+```
+
+---
+
+### STEP 2: Create C Source File
+
+Copy the complete C source code from Part 6 into a file.
+
+```bash
+# On your PC (in ~/pluto_labs/lab2_2_method3/):
+nano lab2_2_method3_hosted.c
+```
+
+**Paste the complete code** from Part 6 (~950 lines starting with `/**` comment block).
+
+**Verify file size**:
+```bash
+wc -l lab2_2_method3_hosted.c
+# Should show: 935 lab2_2_method3_hosted.c (approximately)
+
+ls -lh lab2_2_method3_hosted.c
+# Should show: ~35K
+```
+
+**Save and exit**: `Ctrl+O`, `Enter`, `Ctrl+X`
+
+---
+
+### STEP 3: Create Compilation Script
+
+Create an automated build script for easy recompilation.
+
+```bash
+# On your PC:
+nano compile_lab2_2.sh
+```
+
+**Paste the following script**:
+
+```bash
+#!/bin/bash
+#
+# LAB 2.2 Compilation Script
+# Cross-compiles decimation/interpolation demo for PlutoSDR ARM
+#
+
+set -e  # Exit on error
+
+# Configuration
+SOURCE_FILE="lab2_2_method3_hosted.c"
+OUTPUT_FILE="lab2_2_hosted"
+ARM_LIBS="/opt/arm-libs"
+ARM_GCC="arm-linux-gnueabihf-gcc"
+
+# Color codes for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
+echo "========================================"
+echo "LAB 2.2 - Decimation & Interpolation"
+echo "Cross-Compilation for PlutoSDR ARM"
+echo "========================================"
+echo ""
+
+# Check prerequisites
+echo "Checking prerequisites..."
+
+if ! command -v ${ARM_GCC} &> /dev/null; then
+    echo -e "${RED}Error: ARM cross-compiler not found${NC}"
+    echo "Install: sudo apt-get install gcc-arm-linux-gnueabihf"
+    exit 1
+fi
+
+if [ ! -f "${SOURCE_FILE}" ]; then
+    echo -e "${RED}Error: Source file ${SOURCE_FILE} not found${NC}"
+    exit 1
+fi
+
+if [ ! -d "${ARM_LIBS}/include" ] || [ ! -d "${ARM_LIBS}/lib" ]; then
+    echo -e "${YELLOW}Warning: ARM libraries not found at ${ARM_LIBS}${NC}"
+    echo "Expected: ${ARM_LIBS}/include/iio.h"
+    echo "          ${ARM_LIBS}/lib/libiio.so"
+    echo ""
+    echo "Continuing anyway (may fail during linking)..."
+fi
+
+echo -e "${GREEN}✓ Prerequisites OK${NC}"
+echo ""
+
+# Display compilation command
+echo "Compilation command:"
+echo "  ${ARM_GCC} \\"
+echo "    -Wall -Wextra -O2 -std=c99 \\"
+echo "    -I${ARM_LIBS}/include \\"
+echo "    -o ${OUTPUT_FILE} ${SOURCE_FILE} \\"
+echo "    -L${ARM_LIBS}/lib \\"
+echo "    -liio -lm -lpthread"
+echo ""
+
+# Compile
+echo "Compiling..."
+${ARM_GCC} \
+  -Wall -Wextra -O2 -std=c99 \
+  -I${ARM_LIBS}/include \
+  -o ${OUTPUT_FILE} ${SOURCE_FILE} \
+  -L${ARM_LIBS}/lib \
+  -liio -lm -lpthread
+
+if [ $? -ne 0 ]; then
+    echo -e "${RED}✗ Compilation failed${NC}"
+    exit 1
+fi
+
+echo -e "${GREEN}✓ Compilation successful${NC}"
+echo ""
+
+# Strip debug symbols (reduce size)
+echo "Stripping debug symbols..."
+arm-linux-gnueabihf-strip ${OUTPUT_FILE}
+echo -e "${GREEN}✓ Binary stripped${NC}"
+echo ""
+
+# Display binary info
+echo "Binary information:"
+file ${OUTPUT_FILE}
+echo ""
+echo "Size:"
+ls -lh ${OUTPUT_FILE}
+echo ""
+
+# Verify architecture
+echo "Verifying ARM architecture..."
+if file ${OUTPUT_FILE} | grep -q "ARM"; then
+    echo -e "${GREEN}✓ Correct architecture (ARM)${NC}"
+else
+    echo -e "${RED}✗ Wrong architecture (not ARM!)${NC}"
+    exit 1
+fi
+
+# Check library dependencies
+echo ""
+echo "Library dependencies:"
+arm-linux-gnueabihf-readelf -d ${OUTPUT_FILE} | grep NEEDED
+
+echo ""
+echo "========================================"
+echo -e "${GREEN}Compilation Complete!${NC}"
+echo "========================================"
+echo "Binary: ${OUTPUT_FILE} (~30-40 KB)"
+echo ""
+echo "Next steps:"
+echo "  1. Deploy to PlutoSDR: scp ${OUTPUT_FILE} root@192.168.2.1:/root/"
+echo "  2. SSH to PlutoSDR: ssh root@192.168.2.1"
+echo "  3. Run: ./${OUTPUT_FILE}"
+```
+
+**Make script executable**:
+```bash
+chmod +x compile_lab2_2.sh
+```
+
+---
+
+### STEP 4: Understand Compilation Flags
+
+Before compiling, let's understand each compiler flag.
+
+#### **Warning Flags: `-Wall -Wextra`**
+
+**Purpose**: Enable comprehensive compiler warnings to catch bugs.
+
+**What they do**:
+- `-Wall`: Enables "all" common warnings (unused variables, implicit declarations, etc.)
+- `-Wextra`: Enables extra warnings not covered by -Wall
+
+**Example warning caught**:
+```c
+int16_t *buffer;
+// Forgot to allocate memory
+buffer[0] = 100;  // Warning: 'buffer' may be used uninitialized
+```
+
+**Why it matters**: Catches ~80% of common programming errors at compile time.
+
+#### **Optimization Flag: `-O2`**
+
+**Purpose**: Optimize code for speed while maintaining reasonable compile time.
+
+**What it does**:
+- Loop unrolling (reduce loop overhead)
+- Function inlining (eliminate call overhead)
+- Register allocation (keep variables in CPU registers)
+- Dead code elimination (remove unused code)
+- Instruction scheduling (reorder for CPU pipeline)
+
+**Performance impact**:
+```
+Decimation by M=4 (65536 samples):
+
+-O0 (no optimization):  125 ms
+-O2 (optimized):         42 ms  (3× faster!)
+-O3 (aggressive):        38 ms  (only 10% faster than -O2, longer compile time)
+```
+
+**Why -O2 instead of -O3?**
+- -O2: Balanced speed vs. code size (recommended for embedded)
+- -O3: Aggressive (may increase code size, diminishing returns)
+
+#### **C Standard: `-std=c99`**
+
+**Purpose**: Use C99 standard (modern C features).
+
+**Features enabled**:
+```c
+// Inline variable declarations
+for (int i = 0; i < 100; i++) { ... }  // OK in C99, error in C89
+
+// Boolean type
+#include <stdbool.h>
+bool flag = true;  // OK in C99
+
+// Exact-width integers
+#include <stdint.h>
+int16_t sample;  // Exactly 16 bits (critical for I/Q data)
+
+// Variable-length arrays (use with caution on embedded)
+int n = 64;
+double coeffs[n];  // OK in C99
+```
+
+**Why it matters**: Ensures code portability and access to modern C features.
+
+#### **Include Path: `-I/opt/arm-libs/include`**
+
+**Purpose**: Tell compiler where to find header files.
+
+**What it does**:
+```c
+#include <iio.h>  // Compiler searches in /opt/arm-libs/include/iio.h
+```
+
+**Without `-I` flag**:
+```
+lab2_2_method3_hosted.c:6:10: fatal error: iio.h: No such file or directory
+    6 | #include <iio.h>
+      |          ^~~~~~~
+compilation terminated.
+```
+
+#### **Output File: `-o lab2_2_hosted`**
+
+**Purpose**: Specify output binary name.
+
+**Default behavior** (without `-o`):
+- Compiler produces `a.out` (not descriptive!)
+
+**With `-o lab2_2_hosted`**:
+- Binary named `lab2_2_hosted` (clear purpose)
+
+#### **Library Search Path: `-L/opt/arm-libs/lib`**
+
+**Purpose**: Tell linker where to find libraries.
+
+**What it does**:
+- Searches `/opt/arm-libs/lib/` for `libiio.so`, `libm.so`, etc.
+
+**Without `-L` flag**:
+```
+/usr/bin/ld: cannot find -liio
+collect2: error: ld returned 1 exit status
+```
+
+#### **Libraries: `-liio -lm -lpthread`**
+
+**Purpose**: Link with required libraries.
+
+##### **`-liio`** (Industrial I/O library)
+
+**Functions provided**:
+```c
+iio_create_local_context()       // Connect to PlutoSDR
+iio_context_find_device()         // Get AD9361 devices
+iio_channel_attr_write_longlong() // Set sample rate, frequency
+iio_buffer_refill()               // Capture I/Q samples
+```
+
+**File on PlutoSDR**: `/usr/lib/libiio.so.0`
+
+**Why needed**: All PlutoSDR hardware access goes through libiio.
+
+##### **`-lm`** (Math library)
+
+**Functions provided**:
+```c
+sqrt()    // Square root (for magnitude calculations)
+sin()     // Sine (for DFT frequency detection)
+cos()     // Cosine (for DFT correlation)
+atan2()   // Arctangent (for phase calculation)
+log10()   // Logarithm (for dBFS conversion)
+fabs()    // Absolute value (floating-point)
+round()   // Rounding (for GCD calculations)
+```
+
+**Why needed**: Heavy use of trigonometry in DFT and signal processing.
+
+##### **`-lpthread`** (POSIX threads)
+
+**Why needed**: libiio uses pthreads internally for asynchronous I/O.
+
+**Note**: Our code doesn't directly use threads, but libiio requires libpthread.
+
+**Linker error without `-lpthread`**:
+```
+/opt/arm-libs/lib/libiio.so: undefined reference to `pthread_mutex_lock'
+/opt/arm-libs/lib/libiio.so: undefined reference to `pthread_create'
+```
+
+---
+
+### STEP 5: Run Compilation
+
+Execute the build script to compile the application.
+
+```bash
+# On your PC (in ~/pluto_labs/lab2_2_method3/):
+./compile_lab2_2.sh
+```
+
+**Expected output**:
+```
+========================================
+LAB 2.2 - Decimation & Interpolation
+Cross-Compilation for PlutoSDR ARM
+========================================
+
+Checking prerequisites...
+✓ Prerequisites OK
+
+Compilation command:
+  arm-linux-gnueabihf-gcc \
+    -Wall -Wextra -O2 -std=c99 \
+    -I/opt/arm-libs/include \
+    -o lab2_2_hosted lab2_2_method3_hosted.c \
+    -L/opt/arm-libs/lib \
+    -liio -lm -lpthread
+
+Compiling...
+✓ Compilation successful
+
+Stripping debug symbols...
+✓ Binary stripped
+
+Binary information:
+lab2_2_hosted: ELF 32-bit LSB executable, ARM, EABI5 version 1 (SYSV),
+dynamically linked, interpreter /lib/ld-linux-armhf.so.3,
+for GNU/Linux 3.2.0, stripped
+
+Size:
+-rwxr-xr-x 1 user user 34K Nov 27 12:30 lab2_2_hosted
+
+Verifying ARM architecture...
+✓ Correct architecture (ARM)
+
+Library dependencies:
+ 0x00000001 (NEEDED)             Shared library: [libiio.so.0]
+ 0x00000001 (NEEDED)             Shared library: [libm.so.6]
+ 0x00000001 (NEEDED)             Shared library: [libpthread.so.0]
+ 0x00000001 (NEEDED)             Shared library: [libc.so.6]
+
+========================================
+Compilation Complete!
+========================================
+Binary: lab2_2_hosted (~30-40 KB)
+
+Next steps:
+  1. Deploy to PlutoSDR: scp lab2_2_hosted root@192.168.2.1:/root/
+  2. SSH to PlutoSDR: ssh root@192.168.2.1
+  3. Run: ./lab2_2_hosted
+```
+
+---
+
+### STEP 6: Verify Binary
+
+Perform final checks to ensure the binary is correct.
+
+#### **6.1: Check File Type**
+
+```bash
+file lab2_2_hosted
+```
+
+**Must show**:
+- ✓ `ELF 32-bit LSB executable`
+- ✓ `ARM`
+- ✓ `EABI5 version 1`
+- ✓ `dynamically linked`
+- ✓ `stripped`
+
+**If shows "x86-64" or "x86"**: You compiled for wrong architecture! Re-run with ARM cross-compiler.
+
+#### **6.2: Check Size**
+
+```bash
+ls -lh lab2_2_hosted
+```
+
+**Expected size**: 30-40 KB (with -O2 and stripped)
+
+**Size comparison**:
+| Optimization | Size   | Notes                          |
+|--------------|--------|--------------------------------|
+| -O0          | 52 KB  | No optimization, debug symbols |
+| -O2          | 34 KB  | Optimized, stripped (best)     |
+| -O3          | 38 KB  | Aggressive, slightly larger    |
+| -Os          | 28 KB  | Size-optimized, slower         |
+
+**Recommendation**: Use -O2 (balance of speed and size).
+
+#### **6.3: Check Dependencies**
+
+```bash
+arm-linux-gnueabihf-readelf -d lab2_2_hosted | grep NEEDED
+```
+
+**Expected output**:
+```
+ 0x00000001 (NEEDED)             Shared library: [libiio.so.0]
+ 0x00000001 (NEEDED)             Shared library: [libm.so.6]
+ 0x00000001 (NEEDED)             Shared library: [libpthread.so.0]
+ 0x00000001 (NEEDED)             Shared library: [libc.so.6]
+```
+
+**What each library provides**:
+- `libiio.so.0`: PlutoSDR hardware access
+- `libm.so.6`: Math functions (sin, cos, sqrt, log10)
+- `libpthread.so.0`: Thread support (required by libiio)
+- `libc.so.6`: Standard C library (malloc, printf, memset)
+
+**If missing libiio.so.0**: Binary won't run on PlutoSDR.
+
+#### **6.4: Check Symbols (Optional)**
+
+See what functions are being called:
+
+```bash
+arm-linux-gnueabihf-nm -D lab2_2_hosted | grep iio | head -10
+```
+
+**Sample output**:
+```
+         U iio_buffer_destroy
+         U iio_buffer_refill
+         U iio_channel_attr_write
+         U iio_channel_attr_write_double
+         U iio_channel_attr_write_longlong
+         U iio_channel_enable
+         U iio_context_destroy
+         U iio_context_find_device
+         U iio_create_local_context
+         U iio_device_create_buffer
+```
+
+`U` = Undefined (will be resolved by libiio.so at runtime).
+
+---
+
+### Common Compilation Errors
+
+#### **Error 1: ARM cross-compiler not found**
+
+```
+compile_lab2_2.sh: line 35: arm-linux-gnueabihf-gcc: command not found
+```
+
+**Solution**: Install ARM cross-compiler:
+```bash
+sudo apt-get update
+sudo apt-get install gcc-arm-linux-gnueabihf
+```
+
+**Verify installation**:
+```bash
+arm-linux-gnueabihf-gcc --version
+# Should show: arm-linux-gnueabihf-gcc (Ubuntu/Linaro ...) ...
+```
+
+#### **Error 2: iio.h not found**
+
+```
+lab2_2_method3_hosted.c:6:10: fatal error: iio.h: No such file or directory
+    6 | #include <iio.h>
+      |          ^~~~~~~
+```
+
+**Diagnosis**: ARM-compiled libiio headers not found.
+
+**Solution**: Build libiio for ARM (see LAB 1.2 Part 6 for instructions).
+
+**Quick check**:
+```bash
+ls -l /opt/arm-libs/include/iio.h
+# Should exist
+```
+
+#### **Error 3: Undefined reference to `iio_*` functions**
+
+```
+/tmp/ccXYZ.o: In function `init_plutosdr':
+lab2_2_method3_hosted.c:123: undefined reference to `iio_create_local_context'
+lab2_2_method3_hosted.c:128: undefined reference to `iio_context_find_device'
+collect2: error: ld returned 1 exit status
+```
+
+**Diagnosis**: Linker can't find libiio library.
+
+**Solution 1**: Check library path:
+```bash
+ls -l /opt/arm-libs/lib/libiio.so*
+# Should show libiio.so.0 and symlinks
+```
+
+**Solution 2**: Verify `-L` flag in compile command:
+```bash
+# Must include:
+-L/opt/arm-libs/lib -liio
+```
+
+**Solution 3**: Set LD_LIBRARY_PATH (if needed):
+```bash
+export LD_LIBRARY_PATH=/opt/arm-libs/lib:$LD_LIBRARY_PATH
+```
+
+#### **Error 4: Undefined reference to `sqrt`, `sin`, `cos`**
+
+```
+/tmp/ccXYZ.o: In function `find_peak_frequency':
+lab2_2_method3_hosted.c:456: undefined reference to `sqrt'
+lab2_2_method3_hosted.c:459: undefined reference to `sin'
+```
+
+**Diagnosis**: Missing `-lm` flag.
+
+**Solution**: Ensure compilation command includes `-lm`:
+```bash
+arm-linux-gnueabihf-gcc ... -lm
+```
+
+#### **Error 5: Binary won't run on PlutoSDR - "No such file or directory"**
+
+```
+pluto:~# ./lab2_2_hosted
+-sh: ./lab2_2_hosted: No such file or directory
+```
+
+**Diagnosis**: Binary compiled for x86 instead of ARM.
+
+**Solution**: Check binary architecture:
+```bash
+# On your PC:
+file lab2_2_hosted
+# Should show: ARM, 32-bit
+
+# If shows: x86-64
+# Re-compile with arm-linux-gnueabihf-gcc (not gcc!)
+```
+
+#### **Error 6: Warning about unused variables**
+
+```
+lab2_2_method3_hosted.c:234:9: warning: unused variable 'temp' [-Wunused-variable]
+  234 |     int temp;
+      |         ^~~~
+```
+
+**Not an error**: Code will still compile and run.
+
+**To fix** (optional):
+```c
+// Remove the unused variable:
+// int temp;  // REMOVE THIS LINE
+
+// Or use it:
+int temp = some_value;
+(void)temp;  // Mark as intentionally unused
+```
+
+---
+
+### Compilation Complete!
+
+At this point you should have:
+- ✓ `lab2_2_method3_hosted.c` (source code, ~950 lines)
+- ✓ `compile_lab2_2.sh` (build script)
+- ✓ `lab2_2_hosted` (ARM binary, ~34 KB)
+
+**Verification checklist**:
+- [ ] Binary is ARM architecture (`file` command shows "ARM")
+- [ ] Binary is 30-40 KB in size
+- [ ] Binary depends on libiio.so.0, libm.so.6, libpthread.so.0
+- [ ] Compilation script is executable (`chmod +x`)
+- [ ] No compilation errors or warnings
+
+**Next step**: Deploy to PlutoSDR (Part 8)
 
 ---
 
