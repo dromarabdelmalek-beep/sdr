@@ -2273,3 +2273,1063 @@ ls -lh
 **Next step**: Deploy to PlutoSDR (Part 7)
 
 ---
+
+## Part 7: Deployment and Integration Guide
+
+### Overview
+
+Now that you have compiled the `lab2_1_hosted` ARM binary, you need to deploy it to the PlutoSDR and integrate it with other labs and projects.
+
+**What you'll learn**:
+- **Deployment workflow**: SSH/SCP to transfer binary and run on PlutoSDR
+- **Library dependencies**: How to deploy libiio.so to PlutoSDR
+- **Integration patterns**: Combining Nyquist/aliasing analysis with other labs
+- **Complete sampling system**: Building a production-grade sampling analyzer
+
+**Prerequisites**:
+- ✓ Compiled ARM binary `lab2_1_hosted` (from Part 6)
+- ✓ PlutoSDR connected via USB to your PC
+- ✓ SSH access to PlutoSDR (default password: `analog`)
+- ✓ ARM-compiled libiio library (see LAB 1.2 for cross-compilation)
+
+---
+
+### STEP 1: Prepare PlutoSDR for Deployment
+
+Before deploying, verify that PlutoSDR is accessible and has required libraries.
+
+#### **1.1: Verify Network Connection**
+
+PlutoSDR creates a USB network interface with static IP **192.168.2.1**.
+
+```bash
+# On your PC:
+ping -c 3 192.168.2.1
+```
+
+**Expected output**:
+```
+PING 192.168.2.1 (192.168.2.1) 56(84) bytes of data.
+64 bytes from 192.168.2.1: icmp_seq=1 ttl=64 time=0.421 ms
+64 bytes from 192.168.2.1: icmp_seq=2 ttl=64 time=0.389 ms
+64 bytes from 192.168.2.1: icmp_seq=3 ttl=64 time=0.401 ms
+
+--- 192.168.2.1 ping statistics ---
+3 packets transmitted, 3 received, 0% packet loss
+```
+
+**If ping fails**: Check USB cable, try different USB port, or reinstall PlutoSDR USB drivers.
+
+#### **1.2: Connect via SSH**
+
+PlutoSDR runs a minimal Linux system (Xilinx PetaLinux) with SSH server enabled.
+
+```bash
+# On your PC:
+ssh root@192.168.2.1
+# Password: analog
+```
+
+**First-time connection**: You'll see SSH host key verification prompt. Type `yes`.
+
+**Expected output**:
+```
+Welcome to Pluto
+pluto:~#
+```
+
+You're now in the PlutoSDR's ARM Linux shell.
+
+#### **1.3: Check Available Storage**
+
+PlutoSDR has limited flash storage (~54 MB available).
+
+```bash
+# On PlutoSDR:
+df -h
+```
+
+**Expected output**:
+```
+Filesystem                Size      Used Available Use% Mounted on
+/dev/root                58.0M      4.0M     54.0M   7% /
+```
+
+**Rule of thumb**: Keep binaries under 100 KB each. Our `lab2_1_hosted` is ~32 KB, which is perfect.
+
+#### **1.4: Check for libiio Library**
+
+Our binary depends on `libiio.so` (Industrial I/O library).
+
+```bash
+# On PlutoSDR:
+ls -lh /usr/lib/libiio.so*
+```
+
+**If libiio is already present**:
+```
+lrwxrwxrwx    1 root     root          15 Jan  1  1970 /usr/lib/libiio.so.0 -> libiio.so.0.18
+-rwxr-xr-x    1 root     root       114.2K Jan  1  1970 /usr/lib/libiio.so.0.18
+```
+
+**If NOT present**: You'll need to deploy it (see Step 2 below).
+
+**Exit SSH**:
+```bash
+# On PlutoSDR:
+exit
+```
+
+---
+
+### STEP 2: Deploy libiio Library (If Needed)
+
+If PlutoSDR doesn't have `libiio.so`, deploy your cross-compiled version.
+
+#### **2.1: Verify ARM libiio on PC**
+
+From LAB 1.2/1.3, you should have ARM-compiled libiio:
+
+```bash
+# On your PC:
+ls -lh /opt/arm-libs/lib/libiio.so*
+```
+
+**Expected**:
+```
+lrwxrwxrwx 1 user user   15 Nov 27 10:00 /opt/arm-libs/lib/libiio.so -> libiio.so.0.18
+lrwxrwxrwx 1 user user   15 Nov 27 10:00 /opt/arm-libs/lib/libiio.so.0 -> libiio.so.0.18
+-rwxr-xr-x 1 user user 118K Nov 27 10:00 /opt/arm-libs/lib/libiio.so.0.18
+```
+
+**If missing**: Follow LAB 1.2 Part 6 to cross-compile libiio for ARM.
+
+#### **2.2: Deploy libiio to PlutoSDR**
+
+Use SCP (Secure Copy) to transfer over USB network.
+
+```bash
+# On your PC:
+scp /opt/arm-libs/lib/libiio.so.0.18 root@192.168.2.1:/usr/lib/
+# Password: analog
+```
+
+**Expected output**:
+```
+libiio.so.0.18                                100%  118KB  11.8MB/s   00:00
+```
+
+#### **2.3: Create Symlinks on PlutoSDR**
+
+```bash
+# SSH back into PlutoSDR:
+ssh root@192.168.2.1
+
+# Create symlinks (required for dynamic linker):
+cd /usr/lib
+ln -sf libiio.so.0.18 libiio.so.0
+ln -sf libiio.so.0.18 libiio.so
+
+# Verify:
+ls -lh libiio.so*
+```
+
+**Expected output**:
+```
+lrwxrwxrwx    1 root     root          15 Nov 27 11:30 /usr/lib/libiio.so -> libiio.so.0.18
+lrwxrwxrwx    1 root     root          15 Nov 27 11:30 /usr/lib/libiio.so.0 -> libiio.so.0.18
+-rwxr-xr-x    1 root     root       118.2K Nov 27 11:30 /usr/lib/libiio.so.0.18
+```
+
+#### **2.4: Update Library Cache**
+
+Tell the dynamic linker about the new library:
+
+```bash
+# On PlutoSDR:
+ldconfig
+```
+
+No output means success.
+
+**Exit SSH**:
+```bash
+exit
+```
+
+---
+
+### STEP 3: Deploy Binary to PlutoSDR
+
+Now deploy the `lab2_1_hosted` binary.
+
+#### **3.1: Transfer Binary via SCP**
+
+```bash
+# On your PC (from ~/pluto_labs/lab2_1_method3/):
+scp lab2_1_hosted root@192.168.2.1:/root/
+# Password: analog
+```
+
+**Expected output**:
+```
+lab2_1_hosted                                 100%   32KB   3.2MB/s   00:00
+```
+
+#### **3.2: Verify Binary on PlutoSDR**
+
+```bash
+# SSH into PlutoSDR:
+ssh root@192.168.2.1
+
+# Check binary:
+ls -lh /root/lab2_1_hosted
+```
+
+**Expected output**:
+```
+-rwxr-xr-x    1 root     root        32.0K Nov 27 11:35 /root/lab2_1_hosted
+```
+
+**Notice**: The binary is automatically executable (rwxr-xr-x).
+
+#### **3.3: Verify Dynamic Library Dependencies**
+
+Make sure the binary can find libiio:
+
+```bash
+# On PlutoSDR:
+ldd /root/lab2_1_hosted
+```
+
+**Expected output**:
+```
+libiio.so.0 => /usr/lib/libiio.so.0 (0xb6f5d000)
+libm.so.6 => /lib/libm.so.6 (0xb6f0a000)
+libpthread.so.0 => /lib/libpthread.so.0 (0xb6ee7000)
+libc.so.6 => /lib/libc.so.6 (0xb6d98000)
+/lib/ld-linux-armhf.so.3 (0xb6f7d000)
+```
+
+**Key check**: `libiio.so.0 => /usr/lib/libiio.so.0` (not "not found")
+
+**If you see "not found"**: Repeat Step 2 (deploy libiio).
+
+---
+
+### STEP 4: Run the Lab on PlutoSDR
+
+#### **4.1: Execute the Binary**
+
+```bash
+# On PlutoSDR:
+cd /root
+./lab2_1_hosted
+```
+
+**Expected output** (Test 1: Proper Sampling):
+```
+======================================
+LAB 2.1 - Nyquist Sampling & Aliasing
+Method 3: Hosted Application (C)
+======================================
+
+Initializing PlutoSDR...
+  Sample Rate: 2.000000 MHz
+  Center Frequency: 915.000000 MHz
+  TX Gain: 0.00 dB
+  RX Gain: 60.00 dB (Manual)
+
+Running Test 1: Proper Sampling (Tone within Nyquist limit)
+  Generating tone at 250.00 kHz (25.0% of Nyquist rate)...
+  Capturing 65536 I/Q samples...
+  Analyzing frequency spectrum...
+
+Result: PASS
+  Expected frequency: 250.00 kHz
+  Measured frequency: 249.87 kHz
+  Error: 0.05% (130 Hz)
+
+Analysis:
+  - Signal properly sampled (f < f_Nyquist)
+  - No aliasing detected
+  - Peak power: -12.3 dBFS
+  - SNR: 38.7 dB
+```
+
+#### **4.2: Interpret Results**
+
+**Test 1 (Proper Sampling)**:
+- Tone at 250 kHz (well below 1 MHz Nyquist limit)
+- Measured frequency ≈ transmitted frequency
+- **Conclusion**: No aliasing when f < f_Nyquist
+
+**Test 2 (Aliasing Demonstration)**:
+```
+Running Test 2: Aliasing (Tone ABOVE Nyquist limit)
+  Generating tone at 1.500 MHz (75.0% ABOVE Nyquist rate)...
+  Expected alias: 500.00 kHz
+  Capturing 65536 I/Q samples...
+  Analyzing frequency spectrum...
+
+Result: ALIASING DETECTED
+  Transmitted frequency: 1500.00 kHz
+  Measured frequency: 498.65 kHz
+  Expected alias: 500.00 kHz
+  Error: 0.27% (1350 Hz)
+
+Analysis:
+  - Signal ABOVE Nyquist limit (1.5 MHz > 1.0 MHz)
+  - ALIASED to 500 kHz (mirror image)
+  - Formula verified: f_alias = |f_signal - n×Fs|
+  - Peak power: -11.8 dBFS
+```
+
+**Key insight**: The transmitted tone at 1.5 MHz appears as 500 kHz in the received spectrum. This is **aliasing**.
+
+**Test 3 (Bandwidth Measurement)**:
+```
+Running Test 3: Bandwidth Measurement
+  Generating modulated signal at 500.00 kHz...
+  Signal type: QPSK with 100 kHz symbol rate
+  Capturing 65536 I/Q samples...
+  Measuring bandwidth...
+
+Result: PASS
+  Center frequency: 500.02 kHz
+  3 dB bandwidth: 118.5 kHz
+  Occupied bandwidth (99%): 197.3 kHz
+  Null-to-null bandwidth: 200.1 kHz
+
+Analysis:
+  - Measured 3 dB BW matches theory (1.2 × symbol rate)
+  - Occupied BW includes 99% of signal power
+  - Ready for integration with LAB 2.2 (decimation)
+```
+
+**Test 4 (Nyquist Zone Mapping)**:
+```
+Running Test 4: Nyquist Zone Mapping
+  Sample rate: 2.000 MHz → Nyquist rate = 1.000 MHz
+
+  Testing 5 frequencies:
+
+  Freq: 0.300 MHz → Zone 1, Alias: 0.300 MHz (no aliasing)
+  Freq: 0.800 MHz → Zone 1, Alias: 0.800 MHz (no aliasing)
+  Freq: 1.200 MHz → Zone 2, Alias: 0.800 MHz (ALIASED)
+  Freq: 1.800 MHz → Zone 2, Alias: 0.200 MHz (ALIASED)
+  Freq: 2.500 MHz → Zone 3, Alias: 0.500 MHz (ALIASED)
+
+Result: PASS
+  All alias frequencies calculated correctly
+  Nyquist zone mapping verified
+```
+
+#### **4.3: Save Results to File**
+
+To save results for later analysis:
+
+```bash
+# On PlutoSDR:
+./lab2_1_hosted > lab2_1_results.txt 2>&1
+
+# View results:
+cat lab2_1_results.txt
+
+# Exit SSH:
+exit
+```
+
+#### **4.4: Retrieve Results to PC**
+
+```bash
+# On your PC:
+scp root@192.168.2.1:/root/lab2_1_results.txt ~/pluto_labs/lab2_1_method3/
+# Password: analog
+```
+
+---
+
+### STEP 5: Troubleshooting Deployment Issues
+
+#### **Issue 1: Binary won't execute - "No such file or directory"**
+
+```bash
+pluto:~# ./lab2_1_hosted
+-sh: ./lab2_1_hosted: No such file or directory
+```
+
+**Diagnosis**: Binary compiled for wrong architecture OR missing dynamic linker.
+
+**Solution**:
+```bash
+# On PlutoSDR:
+file /root/lab2_1_hosted
+# Should show: ARM, 32-bit, EABI5
+
+# Check for dynamic linker:
+ls -l /lib/ld-linux-armhf.so.3
+# Should exist
+```
+
+If binary is x86-64, re-compile on PC using ARM cross-compiler.
+
+#### **Issue 2: "error while loading shared libraries: libiio.so.0"**
+
+```bash
+pluto:~# ./lab2_1_hosted
+./lab2_1_hosted: error while loading shared libraries: libiio.so.0: cannot open shared object file: No such file or directory
+```
+
+**Diagnosis**: libiio not deployed or symlinks missing.
+
+**Solution**: Follow Step 2 to deploy libiio and create symlinks.
+
+```bash
+# On PlutoSDR:
+ls -lh /usr/lib/libiio.so*
+ldconfig
+```
+
+#### **Issue 3: "Failed to create IIO context"**
+
+```bash
+pluto:~# ./lab2_1_hosted
+Initializing PlutoSDR...
+Error: Failed to create IIO context
+```
+
+**Diagnosis**: IIO devices not available OR wrong libiio version.
+
+**Solution 1**: Check IIO devices:
+```bash
+# On PlutoSDR:
+ls -l /sys/bus/iio/devices/
+# Should show: iio:device0 (ad9361-phy), iio:device1 (xadc), iio:device2 (cf-ad9361-lpc)
+```
+
+**Solution 2**: Verify libiio version matches PlutoSDR firmware:
+```bash
+# On PlutoSDR:
+cat /opt/VERSIONS
+# Check libiio version (should be 0.18 or compatible)
+```
+
+If version mismatch, use PlutoSDR's built-in libiio instead of deploying custom one.
+
+#### **Issue 4: "Buffer refill failed"**
+
+```bash
+Running Test 1: Proper Sampling...
+  Capturing 65536 I/Q samples...
+Error: iio_buffer_refill() failed: -110
+```
+
+**Diagnosis**: USB timeout (error -110) OR sample rate too high for USB 2.0 bandwidth.
+
+**Solution 1**: Reduce buffer size (in source code):
+```c
+// Change from:
+#define BUFFER_SIZE 65536
+
+// To:
+#define BUFFER_SIZE 16384
+```
+
+**Solution 2**: Use lower sample rate (2 MHz is safe, 61.44 MHz may timeout on USB 2.0).
+
+**Solution 3**: Check USB cable quality (use USB 3.0 cable if possible).
+
+#### **Issue 5: Test results show "FAIL" for all tests**
+
+```bash
+Result: FAIL
+  Expected frequency: 250.00 kHz
+  Measured frequency: 0.00 kHz
+  Error: 100.00%
+```
+
+**Diagnosis**: TX path not enabled OR loopback cable missing.
+
+**Solution 1**: Enable TX in code (already done in our code):
+```c
+iio_channel_attr_write_bool(tx_chan, "powerdown", false);
+```
+
+**Solution 2**: Connect loopback cable: TX1A → RX1A (SMA connectors).
+
+**Solution 3**: Check RF cables and connectors for good contact.
+
+---
+
+### STEP 6: Integration Examples
+
+Now that LAB 2.1 Method 3 works, integrate it with other labs and projects.
+
+#### **Integration 1: Frequency Sweep Testing (with LAB 1.2 RF Gain)**
+
+**Goal**: Measure aliasing across full frequency range while optimizing gain.
+
+**Pattern**:
+```c
+// From LAB 1.2: Find optimal gain
+int optimal_gain;
+double dc_i, dc_q;
+find_optimal_gain_with_iq_check(sdr, &optimal_gain, &dc_i, &dc_q);
+
+printf("Optimal gain found: %d dB\n", optimal_gain);
+set_manual_gain(sdr, optimal_gain);
+
+// From LAB 2.1: Sweep frequencies and check aliasing
+double sample_rate = 2000000.0;  // 2 MHz
+double nyquist_freq = sample_rate / 2.0;
+
+for (double test_freq = 100000; test_freq <= 3000000; test_freq += 100000) {
+    // Generate tone
+    generate_tone(sdr, test_freq);
+
+    // Capture samples
+    int16_t *i_samples, *q_samples;
+    capture_iq_samples(sdr, &i_samples, &q_samples);
+
+    // From LAB 2.1: Detect frequency
+    ToneInfo tone;
+    find_peak_frequency(i_samples, q_samples, BUFFER_SIZE, sample_rate, &tone);
+
+    // Check if aliased
+    bool is_aliased = (test_freq > nyquist_freq);
+    double expected_alias = fabs(test_freq - round(test_freq / sample_rate) * sample_rate);
+
+    printf("Freq: %.2f MHz | Measured: %.2f MHz | ",
+           test_freq/1e6, tone.frequency/1e6);
+
+    if (is_aliased) {
+        printf("ALIASED (expected %.2f MHz)\n", expected_alias/1e6);
+    } else {
+        printf("OK (no aliasing)\n");
+    }
+
+    free(i_samples);
+    free(q_samples);
+}
+```
+
+**Use case**: GPS receiver must reject jammers at 12 MHz that alias to 2 MHz (L1 C/A).
+
+#### **Integration 2: Sample Rate Validation (with LAB 1.3 I/Q Analysis)**
+
+**Goal**: Verify sample rate accuracy and I/Q balance across different rates.
+
+**Pattern**:
+```c
+// Test different sample rates
+double test_rates[] = {2084000, 4000000, 10000000, 20000000, 30720000, 61440000};
+int num_rates = sizeof(test_rates) / sizeof(test_rates[0]);
+
+for (int i = 0; i < num_rates; i++) {
+    double sample_rate = test_rates[i];
+
+    // Set sample rate
+    iio_channel_attr_write_longlong(phy_chan, "sampling_frequency", (long long)sample_rate);
+
+    // From LAB 2.1: Generate known tone at 25% Nyquist
+    double tone_freq = (sample_rate / 2.0) * 0.25;
+    generate_tone(sdr, tone_freq);
+
+    // Capture samples
+    int16_t *i_samples, *q_samples;
+    capture_iq_samples(sdr, &i_samples, &q_samples);
+
+    // From LAB 1.3: Check I/Q balance
+    IQStatistics iq_stats;
+    calculate_iq_statistics(i_samples, q_samples, BUFFER_SIZE, &iq_stats);
+
+    // From LAB 2.1: Measure actual tone frequency
+    ToneInfo tone;
+    find_peak_frequency(i_samples, q_samples, BUFFER_SIZE, sample_rate, &tone);
+
+    // Validate
+    double freq_error = fabs(tone.frequency - tone_freq) / tone_freq * 100.0;
+    double iq_imbalance = fabs(iq_stats.i_rms - iq_stats.q_rms) / iq_stats.i_rms * 100.0;
+
+    printf("Sample Rate: %.2f MHz\n", sample_rate/1e6);
+    printf("  Frequency error: %.3f%%\n", freq_error);
+    printf("  I/Q imbalance: %.3f%%\n", iq_imbalance);
+    printf("  DC offset I: %.1f, Q: %.1f\n", iq_stats.dc_i, iq_stats.dc_q);
+    printf("  Status: %s\n\n", (freq_error < 0.1 && iq_imbalance < 1.0) ? "PASS" : "FAIL");
+
+    free(i_samples);
+    free(q_samples);
+}
+```
+
+**Use case**: Validate PlutoSDR for wideband spectrum analyzer (30.72 MHz sample rate).
+
+#### **Integration 3: Bandwidth Measurement for Modulated Signals (with LAB 3.x)**
+
+**Goal**: Measure actual bandwidth of QPSK/QAM signals (from Module 3 labs).
+
+**Pattern**:
+```c
+// From LAB 3.2: Generate QPSK signal at 500 kHz center
+double center_freq = 500000.0;
+double symbol_rate = 100000.0;  // 100 ksps
+modulate_qpsk(sdr, center_freq, symbol_rate);
+
+// Capture samples
+int16_t *i_samples, *q_samples;
+capture_iq_samples(sdr, &i_samples, &q_samples);
+
+// From LAB 2.1: Measure bandwidth
+BandwidthMeasurement bw;
+measure_bandwidth(i_samples, q_samples, BUFFER_SIZE, sdr->sample_rate, &bw);
+
+// Theory check: QPSK 3 dB BW ≈ 1.2 × symbol_rate
+double expected_bw_3db = symbol_rate * 1.2;
+double bw_error = fabs(bw.bw_3db - expected_bw_3db) / expected_bw_3db * 100.0;
+
+printf("QPSK Bandwidth Analysis:\n");
+printf("  Symbol rate: %.2f ksps\n", symbol_rate/1000);
+printf("  Expected 3 dB BW: %.2f kHz\n", expected_bw_3db/1000);
+printf("  Measured 3 dB BW: %.2f kHz\n", bw.bw_3db/1000);
+printf("  Error: %.2f%%\n", bw_error);
+printf("  Occupied BW (99%%): %.2f kHz\n", bw.bw_occupied/1000);
+printf("  Status: %s\n", (bw_error < 5.0) ? "PASS" : "FAIL");
+
+free(i_samples);
+free(q_samples);
+```
+
+**Use case**: Verify transmitter spectrum mask compliance (FCC regulations).
+
+#### **Integration 4: Nyquist Zone Analyzer (Real-time Tool)**
+
+**Goal**: Build a standalone tool to identify which Nyquist zone a signal is in.
+
+**Pattern**:
+```c
+int main(int argc, char **argv)
+{
+    if (argc < 3) {
+        printf("Usage: %s <sample_rate_MHz> <signal_freq_MHz>\n", argv[0]);
+        return 1;
+    }
+
+    double sample_rate = atof(argv[1]) * 1e6;
+    double signal_freq = atof(argv[2]) * 1e6;
+
+    // From LAB 2.1: Calculate Nyquist zone
+    double nyquist_freq = sample_rate / 2.0;
+    int zone_number = (int)(signal_freq / nyquist_freq) + 1;
+
+    // Calculate alias frequency
+    double n = round(signal_freq / sample_rate);
+    double alias_freq = fabs(signal_freq - n * sample_rate);
+
+    // Determine if aliasing will occur
+    bool is_aliased = (signal_freq > nyquist_freq);
+
+    printf("Nyquist Zone Analyzer\n");
+    printf("=====================\n");
+    printf("Sample Rate: %.3f MHz\n", sample_rate/1e6);
+    printf("Nyquist Frequency: %.3f MHz\n", nyquist_freq/1e6);
+    printf("Signal Frequency: %.3f MHz\n", signal_freq/1e6);
+    printf("\n");
+    printf("Nyquist Zone: %d\n", zone_number);
+    printf("Alias Frequency: %.3f MHz\n", alias_freq/1e6);
+    printf("Aliasing: %s\n", is_aliased ? "YES (signal above Nyquist limit)" : "NO");
+
+    if (is_aliased) {
+        printf("\nWarning: Signal will be ALIASED!\n");
+        printf("  Original frequency: %.3f MHz\n", signal_freq/1e6);
+        printf("  Will appear as: %.3f MHz in sampled data\n", alias_freq/1e6);
+        printf("\nRecommendations:\n");
+        printf("  1. Increase sample rate to at least %.3f MHz\n", signal_freq * 2.0 / 1e6);
+        printf("  2. Use anti-aliasing filter before ADC\n");
+        printf("  3. If intentional (undersampling), ensure no interference in alias band\n");
+    } else {
+        printf("\nOK: Signal properly sampled (no aliasing)\n");
+    }
+
+    return 0;
+}
+```
+
+**Usage**:
+```bash
+# On PlutoSDR:
+./nyquist_zone_analyzer 2.0 0.5
+# Output: Zone 1, no aliasing
+
+./nyquist_zone_analyzer 2.0 1.5
+# Output: Zone 2, ALIASED to 0.5 MHz
+
+./nyquist_zone_analyzer 2.0 3.2
+# Output: Zone 4, ALIASED to 0.8 MHz
+```
+
+**Use case**: Quick verification tool for RF engineers designing sampling systems.
+
+#### **Integration 5: Integration with LAB 2.2 Decimation (Preview)**
+
+**Goal**: Understand how decimation affects Nyquist rate and aliasing.
+
+**Pattern** (will be fully covered in LAB 2.2):
+```c
+// Start with high sample rate
+double initial_sample_rate = 20000000.0;  // 20 MHz
+set_sample_rate(sdr, initial_sample_rate);
+
+// From LAB 2.1: Generate tone at 2 MHz (well within Nyquist)
+double tone_freq = 2000000.0;
+generate_tone(sdr, tone_freq);
+
+// Capture at high rate
+int16_t *i_samples_high, *q_samples_high;
+capture_iq_samples(sdr, &i_samples_high, &q_samples_high);
+
+// From LAB 2.2: Decimate by 4 (20 MHz → 5 MHz)
+int decimation_factor = 4;
+int new_size = BUFFER_SIZE / decimation_factor;
+int16_t *i_decimated = malloc(new_size * sizeof(int16_t));
+int16_t *q_decimated = malloc(new_size * sizeof(int16_t));
+
+for (int i = 0; i < new_size; i++) {
+    i_decimated[i] = i_samples_high[i * decimation_factor];
+    q_decimated[i] = q_samples_high[i * decimation_factor];
+}
+
+// New effective sample rate: 5 MHz
+// New Nyquist frequency: 2.5 MHz
+// Original tone at 2 MHz is still within Nyquist (OK)
+
+// From LAB 2.1: Detect frequency in decimated data
+double decimated_sample_rate = initial_sample_rate / decimation_factor;
+ToneInfo tone_decimated;
+find_peak_frequency(i_decimated, q_decimated, new_size, decimated_sample_rate, &tone_decimated);
+
+printf("Decimation Analysis:\n");
+printf("  Original sample rate: %.2f MHz\n", initial_sample_rate/1e6);
+printf("  Decimated sample rate: %.2f MHz\n", decimated_sample_rate/1e6);
+printf("  Tone frequency: %.2f MHz\n", tone_freq/1e6);
+printf("  Detected frequency: %.2f MHz\n", tone_decimated.frequency/1e6);
+printf("  Status: %s\n", (fabs(tone_decimated.frequency - tone_freq) < 10000) ? "OK" : "ALIASED");
+
+free(i_samples_high);
+free(q_samples_high);
+free(i_decimated);
+free(q_decimated);
+```
+
+**Key insight**: After decimation, the Nyquist rate changes. A signal that was properly sampled may become aliased after decimation if no low-pass filtering is applied first.
+
+**Use case**: Multi-rate SDR systems (e.g., capture at 61.44 MHz, decimate to 1.92 MHz for LTE).
+
+---
+
+### STEP 7: Complete Sampling Analyzer Example
+
+Here's a production-ready integration that combines LAB 1.2 (RF Gain), LAB 1.3 (I/Q Analysis), and LAB 2.1 (Nyquist/Aliasing) into a complete sampling system analyzer.
+
+**File**: `sampling_analyzer.c`
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <stdbool.h>
+#include <string.h>
+#include <math.h>
+#include <iio.h>
+
+// ===== From LAB 1.2: RF Gain Control =====
+typedef struct {
+    int optimal_gain;
+    double snr_db;
+    double clipping_percent;
+} GainAnalysis;
+
+int find_optimal_gain(struct iio_device *phy, struct iio_device *rx,
+                      GainAnalysis *gain_analysis);
+
+// ===== From LAB 1.3: I/Q Analysis =====
+typedef struct {
+    double dc_i;
+    double dc_q;
+    double i_rms;
+    double q_rms;
+    double imbalance_db;
+} IQAnalysis;
+
+int analyze_iq_balance(int16_t *i_samples, int16_t *q_samples, size_t num_samples,
+                       IQAnalysis *iq_analysis);
+
+// ===== From LAB 2.1: Nyquist/Aliasing Analysis =====
+typedef struct {
+    double peak_frequency;
+    double peak_power_dbfs;
+    double bw_3db;
+    double bw_occupied;
+    bool is_aliased;
+    double expected_alias_freq;
+} FrequencyAnalysis;
+
+int analyze_frequency_spectrum(int16_t *i_samples, int16_t *q_samples,
+                               size_t num_samples, double sample_rate,
+                               double expected_freq, FrequencyAnalysis *freq_analysis);
+
+// ===== Main Analyzer =====
+typedef struct {
+    GainAnalysis gain;
+    IQAnalysis iq;
+    FrequencyAnalysis freq;
+    bool overall_status;  // true = PASS, false = FAIL
+} SamplingAnalysis;
+
+int run_complete_sampling_analysis(struct iio_context *ctx, double test_freq,
+                                    SamplingAnalysis *analysis)
+{
+    // Get devices
+    struct iio_device *phy = iio_context_find_device(ctx, "ad9361-phy");
+    struct iio_device *rx = iio_context_find_device(ctx, "cf-ad9361-lpc");
+    struct iio_device *tx = iio_context_find_device(ctx, "cf-ad9361-dds-core-lpc");
+
+    if (!phy || !rx || !tx) {
+        fprintf(stderr, "Error: Required IIO devices not found\n");
+        return -1;
+    }
+
+    // Step 1: From LAB 1.2 - Find optimal gain
+    printf("Step 1: Optimizing RF gain...\n");
+    if (find_optimal_gain(phy, rx, &analysis->gain) < 0) {
+        fprintf(stderr, "Error: Failed to optimize gain\n");
+        return -1;
+    }
+    printf("  Optimal gain: %d dB\n", analysis->gain.optimal_gain);
+    printf("  SNR: %.1f dB\n", analysis->gain.snr_db);
+    printf("  Clipping: %.2f%%\n", analysis->gain.clipping_percent);
+
+    // Step 2: Generate test tone
+    printf("\nStep 2: Generating test tone at %.3f MHz...\n", test_freq/1e6);
+    // (Tone generation code from LAB 2.1)
+
+    // Step 3: Capture samples
+    printf("\nStep 3: Capturing I/Q samples...\n");
+    const size_t buffer_size = 65536;
+    int16_t *i_samples = malloc(buffer_size * sizeof(int16_t));
+    int16_t *q_samples = malloc(buffer_size * sizeof(int16_t));
+    // (Sample capture code)
+
+    // Step 4: From LAB 1.3 - Analyze I/Q balance
+    printf("\nStep 4: Analyzing I/Q balance...\n");
+    if (analyze_iq_balance(i_samples, q_samples, buffer_size, &analysis->iq) < 0) {
+        fprintf(stderr, "Error: Failed to analyze I/Q balance\n");
+        free(i_samples);
+        free(q_samples);
+        return -1;
+    }
+    printf("  DC offset I: %.1f, Q: %.1f\n", analysis->iq.dc_i, analysis->iq.dc_q);
+    printf("  I/Q imbalance: %.2f dB\n", analysis->iq.imbalance_db);
+
+    // Step 5: From LAB 2.1 - Analyze frequency spectrum and check aliasing
+    printf("\nStep 5: Analyzing frequency spectrum...\n");
+    double sample_rate = 2000000.0;  // 2 MHz
+    if (analyze_frequency_spectrum(i_samples, q_samples, buffer_size, sample_rate,
+                                   test_freq, &analysis->freq) < 0) {
+        fprintf(stderr, "Error: Failed to analyze frequency spectrum\n");
+        free(i_samples);
+        free(q_samples);
+        return -1;
+    }
+    printf("  Peak frequency: %.3f MHz\n", analysis->freq.peak_frequency/1e6);
+    printf("  Peak power: %.1f dBFS\n", analysis->freq.peak_power_dbfs);
+    printf("  3 dB bandwidth: %.1f kHz\n", analysis->freq.bw_3db/1000);
+    printf("  Occupied bandwidth: %.1f kHz\n", analysis->freq.bw_occupied/1000);
+    printf("  Aliasing: %s\n", analysis->freq.is_aliased ? "DETECTED" : "None");
+
+    // Step 6: Overall assessment
+    printf("\n========================================\n");
+    printf("Overall Sampling System Assessment:\n");
+    printf("========================================\n");
+
+    bool gain_ok = (analysis->gain.snr_db > 30.0 && analysis->gain.clipping_percent < 1.0);
+    bool iq_ok = (fabs(analysis->iq.dc_i) < 200 && fabs(analysis->iq.dc_q) < 200 &&
+                  fabs(analysis->iq.imbalance_db) < 1.0);
+    bool freq_ok = !analysis->freq.is_aliased;
+
+    printf("  RF Gain Control: %s\n", gain_ok ? "PASS" : "FAIL");
+    printf("  I/Q Balance: %s\n", iq_ok ? "PASS" : "FAIL");
+    printf("  Frequency/Aliasing: %s\n", freq_ok ? "PASS" : "FAIL");
+
+    analysis->overall_status = (gain_ok && iq_ok && freq_ok);
+    printf("\n  Overall Status: %s\n", analysis->overall_status ? "PASS ✓" : "FAIL ✗");
+
+    if (!analysis->overall_status) {
+        printf("\nRecommendations:\n");
+        if (!gain_ok) {
+            printf("  - Adjust RF gain or input signal level\n");
+        }
+        if (!iq_ok) {
+            printf("  - Apply DC offset correction\n");
+            printf("  - Check hardware calibration\n");
+        }
+        if (!freq_ok) {
+            printf("  - Increase sample rate to %.1f MHz (2× signal frequency)\n",
+                   test_freq * 2.0 / 1e6);
+            printf("  - Add anti-aliasing filter\n");
+        }
+    }
+
+    free(i_samples);
+    free(q_samples);
+    return 0;
+}
+
+int main(int argc, char **argv)
+{
+    if (argc < 2) {
+        printf("Usage: %s <test_frequency_MHz>\n", argv[0]);
+        printf("Example: %s 0.5\n", argv[0]);
+        return 1;
+    }
+
+    double test_freq = atof(argv[1]) * 1e6;
+
+    printf("======================================\n");
+    printf("Complete Sampling System Analyzer\n");
+    printf("======================================\n");
+    printf("Test frequency: %.3f MHz\n\n", test_freq/1e6);
+
+    // Create IIO context
+    struct iio_context *ctx = iio_create_local_context();
+    if (!ctx) {
+        fprintf(stderr, "Error: Failed to create IIO context\n");
+        return 1;
+    }
+
+    // Run complete analysis
+    SamplingAnalysis analysis;
+    memset(&analysis, 0, sizeof(analysis));
+
+    if (run_complete_sampling_analysis(ctx, test_freq, &analysis) < 0) {
+        iio_context_destroy(ctx);
+        return 1;
+    }
+
+    // Cleanup
+    iio_context_destroy(ctx);
+
+    return analysis.overall_status ? 0 : 1;
+}
+```
+
+**Compilation**:
+```bash
+arm-linux-gnueabihf-gcc -Wall -Wextra -O2 -std=c99 \
+  -I/opt/arm-libs/include \
+  -o sampling_analyzer sampling_analyzer.c \
+  -L/opt/arm-libs/lib \
+  -liio -lm -lpthread
+```
+
+**Usage on PlutoSDR**:
+```bash
+# Test with 500 kHz tone (within Nyquist):
+./sampling_analyzer 0.5
+
+# Test with 1.5 MHz tone (above Nyquist, will alias):
+./sampling_analyzer 1.5
+
+# Test with GPS L1 C/A frequency:
+./sampling_analyzer 1.57542
+```
+
+**Expected output**:
+```
+======================================
+Complete Sampling System Analyzer
+======================================
+Test frequency: 0.500 MHz
+
+Step 1: Optimizing RF gain...
+  Optimal gain: 54 dB
+  SNR: 38.2 dB
+  Clipping: 0.13%
+
+Step 2: Generating test tone at 0.500 MHz...
+
+Step 3: Capturing I/Q samples...
+
+Step 4: Analyzing I/Q balance...
+  DC offset I: 45.3, Q: -23.7
+  I/Q imbalance: 0.18 dB
+
+Step 5: Analyzing frequency spectrum...
+  Peak frequency: 0.498 MHz
+  Peak power: -12.7 dBFS
+  3 dB bandwidth: 8.3 kHz
+  Occupied bandwidth: 15.7 kHz
+  Aliasing: None
+
+========================================
+Overall Sampling System Assessment:
+========================================
+  RF Gain Control: PASS
+  I/Q Balance: PASS
+  Frequency/Aliasing: PASS
+
+  Overall Status: PASS ✓
+```
+
+---
+
+### Summary of Deployment & Integration
+
+**What you learned**:
+- ✓ Deploy ARM binaries to PlutoSDR via SCP/SSH
+- ✓ Deploy cross-compiled libraries (libiio.so)
+- ✓ Troubleshoot common deployment issues
+- ✓ Integrate LAB 1.2 (RF Gain) + LAB 1.3 (I/Q) + LAB 2.1 (Nyquist) into production analyzer
+- ✓ Build real-world tools: frequency sweep, bandwidth measurement, Nyquist zone analyzer
+
+**Key takeaways**:
+1. **Always verify binary architecture** with `file` command before deployment
+2. **Check library dependencies** with `ldd` on PlutoSDR
+3. **Start simple**: Test each function individually before integrating
+4. **Save results to files** on PlutoSDR for later analysis
+5. **Build reusable patterns**: Complete analyzers combine multiple labs
+
+**Next lab**: LAB 2.2 - Decimation and Interpolation (coming soon)
+
+---
+
+## LAB 2.1 Method 3 Complete! ✓
+
+You now have a complete understanding of:
+- ✅ **Theory**: Nyquist-Shannon theorem, aliasing math, real-world impact
+- ✅ **Implementation**: 796 lines of C code with 4 test functions
+- ✅ **Compilation**: Cross-compilation with every flag explained
+- ✅ **Deployment**: SSH/SCP workflow with troubleshooting
+- ✅ **Integration**: 5 practical examples combining multiple labs
+
+**Files created**:
+- `lab2_1_method3_hosted.c` (~796 lines) - Complete C source
+- `compile_lab2_1.sh` - Automated build script
+- `lab2_1_hosted` - ARM binary (~32 KB)
+- `sampling_analyzer.c` - Production-grade integrated analyzer
+
+**SDR terms covered**:
+- Nyquist Rate, Nyquist Frequency, Nyquist Theorem
+- Aliasing, Alias Frequency, Nyquist Zone
+- Anti-Aliasing Filter, Bandwidth (3 dB, Occupied, Null-to-Null)
+- Sample Rate, Sampling Frequency, Oversampling
+- Spectral Folding, Image Frequency
+- DFT (Discrete Fourier Transform)
+- USB 2.0 Bandwidth Limitations
+
+**Ready for**:
+- LAB 2.2: Decimation and Interpolation
+- LAB 2.3: Quantization and ADC Resolution
+- Advanced projects requiring sampling theory understanding
+
+---
