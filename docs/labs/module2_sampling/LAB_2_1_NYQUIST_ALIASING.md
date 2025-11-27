@@ -446,4 +446,413 @@ if __name__ == "__main__":
     print("="*60)
 ```
 
-Due to length constraints, I'll commit what we have and continue with the rest of LAB 2.1 plus additional labs. This gives you a complete working demonstration of aliasing!
+### 3.2 Running PlutoSDR Aliasing Test
+
+```bash
+# Run PlutoSDR aliasing demonstration
+python3 plutosdr_aliasing_test.py
+
+# Expected output:
+# - Shows aliasing at different sample rates
+# - Generates spectrum plots
+# - Compares theoretical vs measured alias frequencies
+```
+
+---
+
+## Part 4: Method 3 - Hosted Application (Nyquist/Aliasing Tests on PlutoSDR ARM)
+
+### Overview
+
+This guide provides **complete step-by-step instructions** for implementing Nyquist sampling and aliasing demonstration directly on PlutoSDR's ARM processor. This C program tests sampling theory by transmitting tones and measuring aliasing effects - all executing on the embedded Linux system within PlutoSDR.
+
+**Benefits over Method 2 (External Application)**:
+- **Real-time sampling control**: Direct ADC/DAC access
+- **Standalone operation**: No PC required for testing
+- **Embedded DSP**: Production-ready sampling analysis on ARM
+- **Hardware-level aliasing**: Test actual AD9361 sampling behavior
+
+---
+
+## THEORY: Deep Dive into Nyquist Sampling and Aliasing
+
+Before implementing this lab, let's deeply understand **why** the Nyquist theorem matters and **how** aliasing affects real radio systems.
+
+### What is the Nyquist Theorem? (Simple Explanation)
+
+**Simple Analogy**: Imagine you're watching a helicopter's rotor blades:
+
+- **Fast camera (high sample rate)**: You see the blades rotating smoothly forward ✓
+- **Slow camera (low sample rate)**: The blades appear to rotate **backward** or stand still! ✗
+
+This "backward rotation" illusion is **aliasing** in the time domain - it's the same phenomenon that causes false frequencies in radio.
+
+**In Sampling Theory**:
+- **Signal**: Contains frequencies up to B Hz
+- **Nyquist Rate**: Minimum sampling rate = 2B samples/second
+- **Nyquist Frequency**: Maximum representable frequency = Fs/2
+
+**Simple Rule**:
+```
+Sample at LEAST 2× the highest frequency in your signal
+Otherwise: FALSE frequencies appear (aliasing)
+```
+
+### Why Does Aliasing Happen? (Mathematical Insight)
+
+**Sampling = Multiplication**:
+When you sample a continuous signal, you're multiplying it by an impulse train:
+
+```
+Sampled signal = Continuous signal × Impulses at rate Fs
+
+Time domain multiplication → Frequency domain CONVOLUTION
+```
+
+**Result in frequency domain**:
+- Original spectrum gets **copied** (replicated) at every multiple of Fs
+- These copies **overlap** if Fs < 2B
+- Overlapping regions create **aliases** (false frequencies)
+
+**Mathematical formula**:
+```
+Alias frequency: f_alias = |f_signal - n×Fs|
+
+where n is chosen so that: 0 ≤ f_alias ≤ Fs/2
+```
+
+**Example Calculation**:
+```
+Fs = 10 kHz (Nyquist frequency = 5 kHz)
+Signal at 7 kHz (above Nyquist)
+
+Calculate alias:
+  n = 1: |7 - 1×10| = 3 kHz ← This is the alias!
+
+Verification:
+  Both 7 kHz and 3 kHz produce the SAME samples when Fs = 10 kHz
+  After sampling, you CANNOT tell them apart!
+```
+
+### Real-World Impact: Why Aliasing Breaks Radios
+
+**Scenario 1: GPS Receiver** (without anti-aliasing filter)
+```
+GPS L1 signal: 1575.42 MHz
+Receiver's ADC: 10 MHz sampling rate
+Nyquist frequency: 5 MHz
+
+After down-conversion to baseband: 2.046 MHz (within Nyquist)
+But strong jammer at 12 MHz gets aliased to:
+  |12 - 10| = 2 MHz ← Alias appears ON TOP of GPS signal!
+
+Result: GPS signal lost, receiver fails to get position ✗
+Solution: Anti-aliasing filter removes everything above 5 MHz ✓
+```
+
+**Scenario 2: Tactical Radio** (improper sampling)
+```
+Desired signal: 915.000 MHz
+Enemy jammer: 915.008 MHz (8 MHz offset)
+
+If Fs = 10 MHz (Nyquist = 5 MHz):
+  Desired: 0 Hz baseband ✓
+  Jammer: 8 MHz → |8 - 10| = 2 MHz alias
+
+Even though jammer is OUTSIDE your intended bandwidth,
+it aliases back and jams your communication!
+
+Solution: Set Fs > 16 MHz OR use anti-aliasing filter
+```
+
+**Scenario 3: Audio Digitization** (why CDs use 44.1 kHz)
+```
+Human hearing: 20 Hz - 20 kHz
+Nyquist rate: 2 × 20 kHz = 40 kHz minimum
+
+CD standard: 44.1 kHz (10% margin)
+  - Allows imperfect anti-aliasing filter
+  - Filter transition band: 20-22 kHz
+  - Everything above 22 kHz must be blocked
+
+If used 40 kHz exactly:
+  - Filter would need brick-wall response (impossible)
+  - Slight filter roll-off would cause aliasing
+  - Audio would have artifacts
+```
+
+### Bandwidth vs. Nyquist Rate (Critical Distinction)
+
+**Common Confusion**:
+- "My signal is at 915 MHz, so I need 1.83 GHz sampling rate"
+- **WRONG!** You only need to sample the **bandwidth**, not the carrier!
+
+**Correct Understanding**:
+```
+RF Signal: 915.000 - 915.020 MHz (20 kHz bandwidth)
+
+After down-conversion to baseband:
+  Signal occupies: -10 kHz to +10 kHz
+  Bandwidth B = 20 kHz
+  Nyquist rate = 2 × 10 kHz = 20 kHz
+
+Practical sampling rate: 40-100 kHz (2-5× oversampling)
+NOT 1.83 GHz!
+```
+
+**Why this works**:
+1. **Mixer** down-converts 915 MHz → baseband (0 Hz center)
+2. **Low-pass filter** removes everything above B/2
+3. **ADC** samples at Fs ≥ 2B
+4. All information about original 915 MHz signal is preserved!
+
+**PlutoSDR Example**:
+```
+AD9361 specifications:
+  - RF frequency: 325 MHz - 3.8 GHz
+  - Sampling rate: 2.084 - 61.44 MHz
+
+How can 61 MHz sampling capture 3.8 GHz signal?
+
+Answer: Quadrature down-conversion!
+  1. LO tunes to 3.8 GHz
+  2. Mixer creates baseband I/Q
+  3. ADCs sample at 61 MHz → Captures ±30 MHz bandwidth
+  4. Total instantaneous bandwidth: 60 MHz
+
+NOT sampling 3.8 GHz directly - sampling the 60 MHz baseband!
+```
+
+### Complex (I/Q) Sampling and Aliasing
+
+**Real Sampling** (one ADC):
+```
+Nyquist frequency: Fs/2
+Representable range: 0 to Fs/2 (positive frequencies only)
+
+Problem: Cannot distinguish +f from -f
+  e.g., +10 kHz and -10 kHz look identical
+```
+
+**Complex (I/Q) Sampling** (two ADCs):
+```
+Nyquist frequency: Still Fs/2
+Representable range: -Fs/2 to +Fs/2 (BOTH positive and negative!)
+
+Advantage: Can distinguish +f from -f
+  e.g., +10 kHz (I leading Q) vs -10 kHz (Q leading I)
+```
+
+**Aliasing in I/Q**:
+```
+For complex baseband at rate Fs:
+  Signal at +f: No aliasing if |f| < Fs/2
+  Signal at -f: No aliasing if |f| < Fs/2
+
+Total usable bandwidth: Fs (full sampling rate!)
+
+Example: Fs = 10 MHz
+  Real sampling: 0 to 5 MHz (5 MHz bandwidth)
+  I/Q sampling: -5 to +5 MHz (10 MHz bandwidth) ← 2× better!
+```
+
+**Why PlutoSDR uses I/Q**:
+- 2× bandwidth efficiency
+- Can distinguish upper/lower sidebands
+- Required for frequency-domain multiplexing
+
+### Anti-Aliasing Filters (The Solution)
+
+**What is an anti-aliasing filter?**
+A **low-pass filter** placed **before the ADC** that removes all frequencies above Fs/2.
+
+**Analog vs Digital Implementation**:
+
+1. **Analog anti-aliasing filter** (before ADC):
+   ```
+   Signal → [Analog LPF] → ADC → Digital processing
+             Removes f > Fs/2
+
+   Advantage: Prevents aliasing completely
+   Disadvantage: Fixed cutoff frequency, analog components age
+   ```
+
+2. **Oversampling + Digital filter** (modern approach):
+   ```
+   Signal → [Wide analog LPF] → [Fast ADC] → [Digital decimation filter] → Output
+            Removes f > 5×Fs             Removes f > Fs/2
+
+   Example: AD9361 approach
+     - Analog filter: Very gradual roll-off
+     - ADC: Samples at 640 MHz max
+     - Digital filter: Sharp brick-wall response
+     - Decimation: Down to user-selected rate (2-61 MHz)
+
+   Advantages:
+     - Flexible sample rate (software-configurable)
+     - Better filter performance (digital FIR)
+     - Consistent performance (no analog drift)
+   ```
+
+**AD9361 Filter Chain**:
+```
+┌──────────────────────────────────────────────────────────────┐
+│                     AD9361 RX Path                            │
+├──────────────────────────────────────────────────────────────┤
+│                                                              │
+│  RF Input                                                    │
+│     │                                                        │
+│     v                                                        │
+│  [LNA + Mixer] → I/Q baseband                                │
+│     │                                                        │
+│     v                                                        │
+│  [Analog LPF] ← Programmable cutoff (200 kHz - 20 MHz)       │
+│     │                                                        │
+│     v                                                        │
+│  [ADC @ 640 MHz] ← Fixed-rate oversampling                   │
+│     │                                                        │
+│     v                                                        │
+│  [Digital FIR filter] ← Programmable decimation              │
+│     │                                                        │
+│     v                                                        │
+│  Output @ Fs (2.084 - 61.44 MHz)                             │
+│                                                              │
+└──────────────────────────────────────────────────────────────┘
+
+Anti-aliasing occurs in BOTH stages:
+  1. Analog LPF: Removes very high frequencies
+  2. Digital FIR: Removes frequencies > Fs/2 after decimation
+```
+
+**Filter Performance Metrics**:
+```
+Ideal anti-aliasing filter:
+  - Passband: |H(f)| = 1 for f < Fs/2
+  - Stopband: |H(f)| = 0 for f > Fs/2
+  - Transition: Instantaneous (brick wall)
+
+Real anti-aliasing filter:
+  - Passband ripple: ±0.1 dB typical
+  - Stopband attenuation: -80 dB typical
+  - Transition band: 10-20% of Fs
+
+Example: Fs = 10 MHz
+  - Passband: 0 - 4.5 MHz (±0.1 dB)
+  - Transition: 4.5 - 5.5 MHz (gradual roll-off)
+  - Stopband: > 5.5 MHz (< -80 dB)
+```
+
+### Bandwidth Measurement Techniques
+
+**What is bandwidth?**
+The range of frequencies occupied by a signal.
+
+**3 dB Bandwidth** (most common):
+- Frequencies where power is at least half the peak power
+- Math: Points where |H(f)| ≥ -3 dB from peak
+- Used for: Channel bandwidth, filter response
+
+**Occupied Bandwidth** (regulatory):
+- Contains 99% of signal power
+- Used for: FCC compliance, spectrum allocation
+- Example: Wi-Fi 20 MHz channels actually use ~18 MHz occupied bandwidth
+
+**Null-to-Null Bandwidth**:
+- Distance between spectral nulls (zeros)
+- Used for: Modulated signals (BPSK, QPSK)
+- Example: BPSK at 1 Mbps → 2 MHz null-to-null bandwidth
+
+**How to measure bandwidth in code**:
+
+1. **FFT Method** (frequency domain):
+   ```c
+   // Capture I/Q samples
+   capture_iq_samples(sdr, &i, &q, N);
+
+   // Compute FFT
+   fft(i, q, N, fft_mag);
+
+   // Find peak
+   peak_idx = find_max(fft_mag, N);
+   peak_power = fft_mag[peak_idx];
+
+   // Find -3 dB points
+   threshold = peak_power / sqrt(2);  // -3 dB = 0.707× power
+   lower_idx = find_first_below(fft_mag, 0, peak_idx, threshold);
+   upper_idx = find_first_below(fft_mag, peak_idx, N, threshold);
+
+   // Calculate bandwidth
+   bandwidth = (upper_idx - lower_idx) * (Fs / N);
+   ```
+
+2. **Power Method** (time domain):
+   ```c
+   // Measure signal power in bins
+   total_power = sum(fft_mag);
+   target_power = 0.99 * total_power;  // 99% occupied bandwidth
+
+   // Integrate from center outward until reaching target
+   integrated = 0;
+   bins = 0;
+   while (integrated < target_power) {
+       integrated += power_in_bin[bins];
+       bins++;
+   }
+
+   occupied_bandwidth = bins * (Fs / N);
+   ```
+
+3. **Correlation Method** (for known signals):
+   ```c
+   // Correlate with reference signal at different frequencies
+   for (f = -Fs/2; f < Fs/2; f += df) {
+       correlation[f] = correlate(received, reference_at_freq(f));
+   }
+
+   // Find correlation > threshold
+   bandwidth = count_bins_above_threshold(correlation) * df;
+   ```
+
+### What This Lab Demonstrates
+
+**4 Key Tests on PlutoSDR ARM**:
+
+1. **Proper Sampling Test**:
+   - Transmit tone at 500 kHz
+   - Sample at 2 MHz (Nyquist = 1 MHz)
+   - Verify tone appears at 500 kHz ✓ No aliasing
+
+2. **Aliasing Test**:
+   - Transmit tone at 1.5 MHz
+   - Sample at 2 MHz (Nyquist = 1 MHz)
+   - Verify tone aliases to -500 kHz ← Aliasing demonstrated!
+
+3. **Bandwidth Measurement**:
+   - Transmit QPSK signal
+   - Measure occupied bandwidth using FFT
+   - Compare to theoretical bandwidth
+
+4. **Nyquist Zone Test**:
+   - Sweep tone frequency from -Fs to +Fs
+   - Map where frequencies appear after sampling
+   - Demonstrate Nyquist zones (1st, 2nd, 3rd...)
+
+**Why run on PlutoSDR ARM?**:
+- **Real ADC/DAC behavior**: See actual hardware quantization
+- **Loopback testing**: TX → RX on same device
+- **Embedded deployment**: Standalone sampling analyzer
+- **No PC dependency**: Battery-powered field testing
+
+**Real-world application**:
+```
+Spectrum analyzer calibration:
+  1. Transmit known tone frequencies
+  2. Measure where they appear
+  3. Verify no aliasing within operating bandwidth
+  4. Test anti-aliasing filter performance
+  5. ✓ Certify analyzer for field use
+```
+
+This hosted application gives you **direct access** to the AD9361's sampling system for validating Nyquist theorem and characterizing aliasing behavior.
+
+---
