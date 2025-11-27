@@ -1060,6 +1060,613 @@ if __name__ == "__main__":
 
 ---
 
+## Method 3: Hosted Application (Compiled C on PlutoSDR ARM)
+
+### Overview
+
+In this method, you'll develop a **production-grade C application** that runs directly on PlutoSDR's ARM processor to analyze quantization effects, measure ADC performance, and demonstrate ENOB, SFDR, and dithering techniques.
+
+**What you'll build**:
+- Quantization noise analyzer (measure SNR vs bit depth)
+- ENOB calculator (effective bits from measured SNR)
+- SFDR tester (spurious-free dynamic range measurement)
+- Clipping detector (identify and quantify signal saturation)
+- Dithering demonstrator (triangular dither for linearity improvement)
+- Dynamic range analyzer (measure usable signal range)
+
+**Prerequisites**:
+- Completed LAB 2.1 Method 3 (Nyquist/Aliasing)
+- Completed LAB 2.2 Method 3 (Decimation/Interpolation)
+- ARM cross-compiler installed
+- libiio library (ARM version) available
+
+---
+
+## Part 5: Quantization Theory (Deep Dive)
+
+Before implementing the quantization analyzer, let's establish comprehensive theoretical foundations.
+
+### 1. Quantization Process
+
+#### **1.1: Analog-to-Digital Conversion**
+
+**Simple Analogy**: Measuring temperature with a thermometer that only shows whole degrees. 98.6°F → 99°F (quantization error = 0.4°F).
+
+**Mathematical Definition**:
+```
+Ideal ADC Model:
+  Input:  x(t) ∈ [-Vref, +Vref] (continuous voltage)
+  Output: x_q[n] ∈ {0, 1, 2, ..., 2^N-1} (discrete digital code)
+
+Quantization function:
+  Q(x) = Δ · ⌊x/Δ + 0.5⌋  (round to nearest level)
+
+Where:
+  Δ = Full-scale range / Number of levels = 2Vref / 2^N
+  ⌊·⌋ = floor function
+```
+
+**Numerical Example** (12-bit ADC, Vref = 1.25V):
+```
+Full-scale range: ±1.25V → 2.5V total
+Number of levels: 2^12 = 4096
+Step size: Δ = 2.5 / 4096 = 610.35 µV
+
+Input voltage: 0.500000 V
+Digital code: ⌊0.500000 / 0.00061035 + 0.5⌋ = 819
+Quantized output: 819 × 0.00061035 = 0.499877 V
+Quantization error: 0.500000 - 0.499877 = 123 µV
+
+Input voltage: 0.500500 V
+Digital code: ⌊0.500500 / 0.00061035 + 0.5⌋ = 820
+Quantized output: 820 × 0.00061035 = 0.500488 V
+Quantization error: 0.500500 - 0.500488 = 12 µV
+```
+
+#### **1.2: Quantization Error Statistics**
+
+**Error Distribution** (uniform quantizer, random input):
+```
+Quantization error: e_q[n] = x_q[n] - x[n]
+
+Assuming x[n] uniformly distributed within each quantization interval:
+  e_q ~ U(-Δ/2, +Δ/2)  (uniform distribution)
+
+Mean (DC bias):
+  E[e_q] = 0  (unbiased for rounding quantizer)
+
+Variance (noise power):
+  σ²_q = E[e_q²] = ∫_{-Δ/2}^{+Δ/2} e² · (1/Δ) de
+       = [e³/(3Δ)]_{-Δ/2}^{+Δ/2}
+       = Δ²/12
+
+RMS error:
+  σ_q = Δ / √12 ≈ 0.289 · Δ
+```
+
+**Example** (12-bit ADC):
+```
+Δ = 610.35 µV
+RMS quantization noise: 610.35 / √12 = 176.2 µV
+```
+
+### 2. Signal-to-Quantization-Noise Ratio (SQNR)
+
+#### **2.1: Theoretical SQNR Derivation**
+
+**Signal Power** (full-scale sinusoid):
+```
+x(t) = A · sin(2πf₀t), where A = Vref (full scale)
+
+Instantaneous power: p(t) = x²(t) = A² sin²(2πf₀t)
+
+Average power: P_s = (1/T) ∫₀^T A² sin²(2πf₀t) dt
+             = A² · (1/T) · T/2
+             = A²/2
+
+For A = 1.0 V:
+  P_s = 0.5 W (normalized)
+```
+
+**Quantization Noise Power**:
+```
+From variance calculation:
+  P_q = σ²_q = Δ²/12
+
+For N-bit ADC with full-scale ±A:
+  Δ = 2A / 2^N
+
+  P_q = (2A/2^N)² / 12
+      = 4A² / (12 · 2^(2N))
+      = A² / (3 · 2^(2N))
+```
+
+**SQNR Formula**:
+```
+SQNR = P_s / P_q
+     = (A²/2) / (A² / (3 · 2^(2N)))
+     = (3 · 2^(2N)) / 2
+     = (3/2) · 4^N
+
+In decibels:
+  SQNR_dB = 10 log₁₀((3/2) · 4^N)
+          = 10 log₁₀(3/2) + 10 log₁₀(4^N)
+          = 1.76 + 10N · log₁₀(4)
+          = 1.76 + 10N · 0.602
+          = 6.02N + 1.76 dB
+
+This is the FAMOUS quantization SNR formula!
+```
+
+**Verification**:
+```
+8-bit ADC:   SQNR = 6.02 × 8  + 1.76 = 49.92 dB ≈ 50 dB
+10-bit ADC:  SQNR = 6.02 × 10 + 1.76 = 61.96 dB ≈ 62 dB
+12-bit ADC:  SQNR = 6.02 × 12 + 1.76 = 73.96 dB ≈ 74 dB
+16-bit ADC:  SQNR = 6.02 × 16 + 1.76 = 98.08 dB ≈ 98 dB
+24-bit ADC:  SQNR = 6.02 × 24 + 1.76 = 146.24 dB ≈ 146 dB
+
+Rule of thumb: Each bit adds 6 dB of SNR
+```
+
+#### **2.2: SQNR vs Input Signal Level**
+
+**Problem**: Formula assumes FULL-SCALE sinusoid. What if input is smaller?
+
+**General SQNR**:
+```
+For sinusoid with amplitude A_input < A_fullscale:
+
+Signal power: P_s = A_input² / 2
+
+Quantization noise power unchanged: P_q = Δ²/12
+
+SQNR = (A_input² / 2) / (Δ² / 12)
+     = 6 A_input² / Δ²
+
+In dB:
+  SQNR_dB = 6.02N + 1.76 + 20 log₁₀(A_input / A_fullscale)
+
+Backoff penalty: 20 log₁₀(A_input / A_fullscale)
+```
+
+**Example**:
+```
+12-bit ADC, signal at -6 dBFS (half amplitude):
+
+A_input / A_fullscale = 10^(-6/20) = 0.501
+
+SQNR = 74 + 20 log₁₀(0.501)
+     = 74 - 6
+     = 68 dB
+
+Lost 6 dB SNR by not using full dynamic range!
+```
+
+**Optimal operating point**: Keep signal at -3 to -6 dBFS (87-71% of full scale) for headroom against clipping.
+
+### 3. Effective Number of Bits (ENOB)
+
+#### **3.1: ENOB Definition**
+
+**Problem**: Real ADCs have noise sources beyond quantization.
+
+**ENOB**: Number of ideal bits that would produce the measured SNR.
+
+**Formula**:
+```
+Measured SNR from real ADC → ENOB
+
+ENOB = (SNR_measured - 1.76) / 6.02
+
+Example: AD9361 measured SNR = 70 dB
+  ENOB = (70 - 1.76) / 6.02
+       = 68.24 / 6.02
+       = 11.33 bits
+
+Interpretation: 12-bit ADC performs like ideal 11.3-bit ADC
+Lost: 12 - 11.3 = 0.7 bits due to non-idealities
+```
+
+#### **3.2: Noise Sources in Real ADCs**
+
+**Total Noise Budget**:
+```
+SNR_total = -10 log₁₀(10^(-SNR_quant/10) + 10^(-SNR_thermal/10)
+                      + 10^(-SNR_jitter/10) + 10^(-SNR_distortion/10))
+
+Where:
+  SNR_quant:      Quantization noise (6.02N + 1.76 dB)
+  SNR_thermal:    Thermal noise from front-end
+  SNR_jitter:     Clock jitter (phase noise)
+  SNR_distortion: Nonlinearity (INL, DNL, harmonics)
+```
+
+**AD9361 Example** (12-bit ADC):
+```
+Component contributions to noise:
+
+1. Quantization noise:    74.0 dB (theoretical)
+2. Thermal noise (7 dB NF): ~50 dB (dominates!)
+3. Clock jitter (100 fs):   ~80 dB
+4. ADC nonlinearity:        ~75 dB (INL < 1 LSB)
+
+Total SNR (power sum):
+  1/SNR_total = 1/10^7.4 + 1/10^5.0 + 1/10^8.0 + 1/10^7.5
+              ≈ 1/10^5.0  (thermal noise dominates)
+
+  SNR_total ≈ 70 dB
+
+ENOB = (70 - 1.76) / 6.02 = 11.3 bits
+```
+
+**Key Insight**: Thermal noise from RF front-end limits practical ENOB, not quantization noise!
+
+### 4. Spurious-Free Dynamic Range (SFDR)
+
+#### **4.1: SFDR Definition**
+
+**Definition**: Ratio of fundamental signal power to largest spurious (unwanted) component.
+
+**Mathematical Expression**:
+```
+SFDR_dB = 20 log₁₀(A_fundamental / A_spur)
+
+Where A_spur is the largest spurious tone from:
+  - Harmonics (2f₀, 3f₀, 4f₀, ...)
+  - Intermodulation products (f₁ ± f₂)
+  - Clock feedthrough
+  - Power supply noise
+```
+
+**Example**:
+```
+Fundamental at 500 kHz: -10 dBFS
+2nd harmonic at 1 MHz:  -75 dBFS (largest spur)
+
+SFDR = -10 - (-75) = 65 dB
+```
+
+#### **4.2: SFDR vs SNR vs ENOB**
+
+**Comparison**:
+```
+SNR:  Measures total noise floor (integrated across all frequencies)
+SFDR: Measures worst-case spurious tone (single frequency)
+ENOB: Effective resolution accounting for all noise
+
+For ideal ADC:
+  SFDR ≈ SNR ≈ 6.02N + 1.76 dB (quantization-limited)
+
+For real ADC:
+  SFDR < SNR (spurs stick out above noise floor)
+
+AD9361 typical:
+  SNR:  70 dB
+  SFDR: 65 dB (2nd/3rd harmonics from nonlinearity)
+  ENOB: 11.3 bits
+```
+
+#### **4.3: Sources of Spurious Tones**
+
+**1. Harmonic Distortion** (ADC nonlinearity):
+```
+2nd harmonic: HD2 = 20 log₁₀(A_2f / A_f)
+3rd harmonic: HD3 = 20 log₁₀(A_3f / A_f)
+
+For N-bit ADC with good linearity:
+  HD2, HD3 > -80 dBc typical
+
+AD9361:
+  HD2: -75 dBc typical
+  HD3: -80 dBc typical
+```
+
+**2. Intermodulation Distortion** (two-tone test):
+```
+Input: f₁ = 500 kHz, f₂ = 600 kHz
+
+2nd-order products: f₁ ± f₂ = 1.1 MHz, 100 kHz
+3rd-order products: 2f₁ - f₂ = 400 kHz (in-band!)
+                    2f₂ - f₁ = 700 kHz (in-band!)
+
+IMD3 (3rd-order intercept point):
+  For ideal 12-bit ADC: IIP3 ~ +20 dBm
+  For AD9361:           IIP3 ~ +10 dBm
+```
+
+### 5. Dynamic Range
+
+#### **5.1: Dynamic Range Definition**
+
+**Dynamic Range**: Ratio of largest to smallest measurable signal.
+
+**Mathematical Expression**:
+```
+DR_dB = 20 log₁₀(V_max / V_min)
+
+Where:
+  V_max: Full-scale voltage (clipping threshold)
+  V_min: Noise floor (smallest detectable signal)
+
+For N-bit ADC:
+  V_max = Vref
+  V_min = Δ = Vref / 2^N  (1 LSB)
+
+  DR = 20 log₁₀(2^N) = 6.02N dB
+
+Note: DR ≈ SNR (for full-scale signal)
+```
+
+**Example**:
+```
+12-bit ADC, Vref = 1.25V:
+
+V_max = 1.25 V
+V_min = 1.25 / 4096 = 305 µV (1 LSB)
+
+DR = 20 log₁₀(1.25 / 0.000305)
+   = 20 log₁₀(4096)
+   = 72.2 dB
+
+This means signals spanning 72 dB (voltage ratio of 4096:1)
+can be digitized without clipping or being buried in noise.
+```
+
+#### **5.2: Usable Dynamic Range**
+
+**Problem**: Practical dynamic range less than theoretical.
+
+**Factors reducing DR**:
+```
+1. Clipping headroom:    -3 to -6 dB (prevent occasional peaks)
+2. Noise floor margin:    +3 to +6 dB (detection threshold)
+3. Spurious tones:       SFDR limit
+
+Usable DR ≈ SFDR - 6 dB (typical)
+
+AD9361 example:
+  Theoretical DR: 72 dB
+  SFDR:           65 dB
+  Usable DR:      ~59 dB (with margins)
+```
+
+### 6. Dithering
+
+#### **6.1: Dithering Concept**
+
+**Problem**: Low-level signals exhibit quantization distortion (non-random error pattern).
+
+**Dithering**: Add small random noise BEFORE quantization to randomize error.
+
+**Simple Analogy**: Old film cameras added grain to smooth color transitions. Dithering does the same for ADCs.
+
+**Mathematical Process**:
+```
+Without dithering:
+  y[n] = Q(x[n])
+
+With dithering:
+  y[n] = Q(x[n] + d[n]) - d[n]
+
+Where d[n] is dither signal (usually uniform or triangular noise)
+```
+
+#### **6.2: Types of Dither**
+
+**1. Rectangular (Uniform) Dither**:
+```
+d[n] ~ U(-Δ/2, +Δ/2)  (uniform distribution)
+
+Effect:
+  - Linearizes quantizer
+  - Increases noise floor by 3 dB
+  - Simple to implement
+
+Noise power added: Δ²/12 (same as quantization noise)
+Total noise: 2 × (Δ²/12) → SNR penalty: 3 dB
+```
+
+**2. Triangular (TPDF - Triangular Probability Density Function) Dither**:
+```
+d[n] = d₁[n] + d₂[n], where d₁, d₂ ~ U(-Δ/2, +Δ/2)
+
+Triangular PDF: higher probability near zero, lower at extremes
+
+Effect:
+  - Linearizes quantizer
+  - White quantization noise (frequency-independent)
+  - Increases noise floor by 4.77 dB
+  - OPTIMAL for audio (inaudible noise shaping)
+
+Noise power added: Δ²/6
+Total noise: Δ²/12 + Δ²/6 = Δ²/4 → SNR penalty: ~4.77 dB
+```
+
+**Trade-off**:
+```
+Without dither:
+  - Higher SNR for large signals
+  - Quantization distortion on small signals (harmonics, IMD)
+  - Non-random error pattern
+
+With triangular dither:
+  - Lower SNR (~5 dB worse)
+  - No quantization distortion (fully linearized)
+  - Random white noise (psychoacoustically better)
+
+Recommendation: Use dithering for audio (human ear prefers white noise over distortion)
+                 Skip dithering for communications (maximize SNR)
+```
+
+#### **6.3: Dithering Implementation**
+
+**Hardware (at ADC input)**:
+```
+Add analog noise before ADC:
+  - Noise amplitude: ~1 LSB RMS
+  - Gaussian or triangular distribution
+  - Wideband (white noise)
+
+Advantage: True analog dithering
+Disadvantage: Adds physical noise source
+```
+
+**Software (digital dithering before requantization)**:
+```c
+// Example: 16-bit signal → 12-bit output with dithering
+
+int16_t input = ...; // 16-bit value
+
+// Generate triangular dither (sum of two uniform random)
+int dither = (rand() & 0xF) + (rand() & 0xF) - 15; // ±15 range
+
+// Add dither, quantize (shift right 4 bits), remove dither bias
+int16_t output = (input + dither) >> 4;
+
+// Result: 12-bit quantized value with reduced distortion
+```
+
+### 7. Clipping and Overload
+
+#### **7.1: Hard Clipping**
+
+**Definition**: Signal exceeds ADC full-scale range → saturates at max/min code.
+
+**Mathematical Model**:
+```
+Hard clipper:
+  y[n] = clip(x[n]) = {  +Vmax,  if x[n] > +Vmax
+                       {  x[n],   if -Vmax ≤ x[n] ≤ +Vmax
+                       {  -Vmax,  if x[n] < -Vmax
+
+Clipping is NONLINEAR → generates harmonics!
+```
+
+**Harmonic Content** (clipped sinusoid):
+```
+Fourier series of clipped sine wave shows:
+  - Fundamental (f₀): reduced amplitude
+  - Odd harmonics (3f₀, 5f₀, 7f₀, ...): significant energy
+
+Example: 10% clipping (90% of samples unclipped)
+  Harmonic levels:
+    1st (fundamental): -0.5 dB (slightly reduced)
+    3rd harmonic:       -30 dBc
+    5th harmonic:       -40 dBc
+
+  Severe clipping (50% of samples clipped):
+    3rd harmonic:       -10 dBc (very audible!)
+```
+
+**Clipping Detection**:
+```
+Peak-to-average ratio (PAR):
+  PAR_dB = 20 log₁₀(|x_peak| / x_RMS)
+
+For sinusoid: PAR = 20 log₁₀(√2) = 3.01 dB
+
+If signal occasionally clips:
+  - Probability of clipping > 0.1% → audible distortion
+  - Keep peak 3-6 dB below full scale (headroom)
+```
+
+#### **7.2: Clipping Recovery**
+
+**Problem**: Clipping is IRREVERSIBLE. Cannot recover original signal.
+
+**Mitigation strategies**:
+```
+1. AGC (Automatic Gain Control):
+   - Monitor signal level
+   - Reduce gain if peaks approach clipping
+   - Attack time: 10-100 ms (fast enough to prevent clipping)
+   - Release time: 1-10 seconds (slow to avoid pumping)
+
+2. Peak limiting:
+   - Soft clipper before ADC (analog limiter)
+   - Reduces harmonic distortion compared to hard clipping
+   - Example: tanh() soft clipper
+
+3. Headroom planning:
+   - Design for PAR + 6 dB headroom
+   - Example: OFDM signal with 12 dB PAR → keep RMS at -18 dBFS
+```
+
+### 8. AD9361 ADC Characteristics
+
+#### **8.1: AD9361 Specifications**
+
+**Key Parameters**:
+```
+ADC Resolution:        12 bits
+Sample Rate:          25 MSPS (max per channel)
+Full-Scale Input:     2.5 Vpp differential (±1.25V)
+LSB Size:             2.5V / 4096 = 610 µV
+
+Theoretical Performance:
+  SNR:    6.02 × 12 + 1.76 = 74.0 dB
+  SFDR:   74 dB (quantization-limited)
+  DR:     72.2 dB
+  ENOB:   12.0 bits
+
+Actual Performance (typical @ 2.4 GHz):
+  SNR:    70 dB (thermal noise-limited)
+  SFDR:   65 dBc (nonlinearity-limited)
+  ENOB:   11.3 bits
+  NF:     ~7 dB (receive path noise figure)
+```
+
+**Degradation Factors**:
+```
+1. Thermal Noise (~7 dB NF):
+   - LNA, mixer, baseband amplifier noise
+   - Dominates at low/medium gain settings
+   - Contribution: ~4 dB SNR loss
+
+2. Clock Jitter (~100 fs RMS):
+   - Phase noise on 640 MHz ADC clock
+   - SNR_jitter = -20 log₁₀(2π f_in t_jitter)
+   - At f_in = 10 MHz: SNR_jitter ≈ 80 dB (negligible)
+
+3. ADC Nonlinearity (INL < 1 LSB):
+   - Differential nonlinearity (DNL)
+   - Integral nonlinearity (INL)
+   - Generates harmonics → SFDR ≈ 65 dB
+```
+
+#### **8.2: Optimal Operating Range**
+
+**RX Gain Settings**:
+```
+Manual Gain Mode (recommended for testing):
+
+Low gain (0-30 dB):
+  - Large input signals (> -30 dBm)
+  - Risk of clipping
+  - SNR: ~60-65 dB
+
+Medium gain (30-50 dB):
+  - Optimal for most signals (-60 to -30 dBm)
+  - Best SNR: ~70 dB
+  - Good linearity
+
+High gain (50-73 dB):
+  - Weak signals (< -60 dBm)
+  - Increased noise floor
+  - SNR: 55-65 dB (noise figure degrades)
+
+Recommendation: Use 40-50 dB for lab tests
+```
+
+---
+
+## Part 6: Complete C Source Code
+
+(To be continued in next section...)
+
+---
+
 ## Summary
 
 In this lab, you learned:
