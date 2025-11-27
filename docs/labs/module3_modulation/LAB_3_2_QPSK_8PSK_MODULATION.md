@@ -2900,3 +2900,403 @@ int main(void)
 - **Memory**: ~50 KB total (symbols, samples, filters)
 
 **Next**: Part 5 will provide detailed compilation instructions with all flags explained!
+
+---
+
+## Part 5: Method 3 - Compilation Guide
+
+This section provides detailed instructions for cross-compiling the QPSK/8-PSK modulation code for PlutoSDR's ARM processor.
+
+### Step 1: Prerequisites
+
+Ensure you have the ARM cross-compiler installed:
+
+```bash
+# Check if cross-compiler is available
+arm-linux-gnueabihf-gcc --version
+
+# Expected output:
+# arm-linux-gnueabihf-gcc (Ubuntu/Linaro ...) X.X.X
+```
+
+If not installed:
+```bash
+# Ubuntu/Debian
+sudo apt-get install gcc-arm-linux-gnueabihf
+
+# Fedora/RHEL
+sudo dnf install gcc-arm-linux-gnu
+```
+
+### Step 2: Basic Compilation
+
+**Minimal command**:
+```bash
+arm-linux-gnueabihf-gcc -o lab3_2_mpsk lab3_2_mpsk_modulation.c -liio -lm -std=c99
+```
+
+**Why each flag is needed**:
+
+1. **`-o lab3_2_mpsk`**: Output executable name
+   - Creates binary file `lab3_2_mpsk`
+   - Without this, default is `a.out`
+
+2. **`-liio`**: Link Industrial I/O library
+   - Required for PlutoSDR hardware access (if using libiio functions)
+   - Even if not used in this example, good practice to include
+   - Library provides: `iio_context`, `iio_device`, `iio_channel`, etc.
+
+3. **`-lm`**: Link math library (CRITICAL for this lab!)
+   - Required for:
+     * `cos()`, `sin()` - constellation point generation
+     * `sqrt()` - RRC filter normalization, distance calculations
+     * `pow()` - RRC filter denominator calculation
+     * `cabs()` - complex absolute value (magnitude)
+     * `creal()`, `cimag()` - extract real/imaginary parts
+     * `fabs()` - floating-point absolute value
+   - **Must come AFTER source file** (linker order matters!)
+
+4. **`-std=c99`**: Use C99 standard
+   - **ESSENTIAL** for complex number support
+   - Enables `complex.h` header
+   - Allows `complex double` type
+   - Provides complex math functions: `cabs()`, `creal()`, `cimag()`
+   - Enables `I` imaginary unit constant
+
+### Step 3: Recommended Compilation (with Optimizations)
+
+```bash
+arm-linux-gnueabihf-gcc -o lab3_2_mpsk lab3_2_mpsk_modulation.c \
+  -liio -lm \
+  -std=c99 \
+  -O3 \
+  -march=armv7-a \
+  -mfpu=neon \
+  -mfloat-abi=hard \
+  -ffast-math \
+  -Wall -Wextra
+```
+
+**Additional flags explained**:
+
+5. **`-O3`**: Maximum optimization level
+   - Enables aggressive optimizations
+   - Unrolls loops (critical for FIR filter convolution)
+   - Inlines small functions (`nearest_constellation_point`, Gray code lookup)
+   - Vectorizes array operations where possible
+   - Speed increase: ~2-3× vs unoptimized
+   - **Trade-off**: Longer compile time, harder to debug
+
+6. **`-march=armv7-a`**: Target ARM Cortex-A9 architecture
+   - PlutoSDR uses Xilinx Zynq-7000 (dual-core ARM Cortex-A9)
+   - Enables ARMv7-A instruction set
+   - Allows NEON SIMD instructions
+   - Better code generation than generic ARM
+
+7. **`-mfpu=neon`**: Enable NEON SIMD unit
+   - NEON = Advanced SIMD extension for ARM
+   - Processes 4× single-precision floats or 2× double-precision in parallel
+   - **Critical for performance**:
+     * RRC filtering: 4× speedup
+     * Complex number operations: 2× speedup (I and Q in parallel)
+     * Distance calculations: 4× speedup (process 4 constellation points at once)
+   - ARM Cortex-A9 has NEON support built-in
+
+8. **`-mfloat-abi=hard`**: Use hardware floating-point ABI
+   - Pass float/double arguments in FPU registers (not general-purpose registers)
+   - Faster function calls for math-heavy code
+   - **Essential** for complex number performance
+   - PlutoSDR supports hard-float ABI
+
+9. **`-ffast-math`**: Fast math optimizations (use with caution!)
+   - Enables aggressive floating-point optimizations
+   - Assumes:
+     * No NaN or Inf values
+     * Finite math only
+     * Relaxed IEEE 754 compliance
+   - **Benefits for this lab**:
+     * Faster `sin()`, `cos()` (constellation generation)
+     * Faster `sqrt()` (distance calculations, RRC normalization)
+     * ~10-20% speedup in tight loops
+   - **Safe for this application** (no extreme values expected)
+
+10. **`-Wall -Wextra`**: Enable all warnings
+    - Catches potential bugs:
+      * Unused variables
+      * Implicit type conversions
+      * Array index out of bounds (compile-time detectable)
+      * Missing return statements
+    - **Good practice** for embedded development
+
+### Step 4: Verify Compilation
+
+Check that the binary is compiled for ARM:
+
+```bash
+file lab3_2_mpsk
+```
+
+**Expected output**:
+```
+lab3_2_mpsk: ELF 32-bit LSB executable, ARM, EABI5 version 1 (SYSV),
+dynamically linked, interpreter /lib/ld-linux-armhf.so.3,
+for GNU/Linux 3.2.0, not stripped
+```
+
+**Key indicators**:
+- `ARM`: Correct architecture ✓
+- `EABI5`: Embedded ABI version 5 ✓
+- `dynamically linked`: Will use shared libraries (libiio, libm) ✓
+- `ld-linux-armhf.so.3`: Hard-float loader ✓
+
+### Step 5: Common Compilation Errors and Solutions
+
+#### Error 1: `complex.h: No such file or directory`
+
+**Cause**: Missing `-std=c99` or using older C standard
+
+**Solution**:
+```bash
+# Always include -std=c99 (or -std=c11)
+arm-linux-gnueabihf-gcc -o lab3_2_mpsk lab3_2_mpsk_modulation.c -liio -lm -std=c99
+```
+
+**Why**: C99 introduced native complex number support. Without it, `complex.h` is not available.
+
+#### Error 2: `undefined reference to 'cabs'`, `'creal'`, `'cimag'`
+
+**Cause**: Missing `-lm` or `-lm` placed before source file
+
+**Incorrect**:
+```bash
+# WRONG: -lm before source file
+arm-linux-gnueabihf-gcc -lm -o lab3_2_mpsk lab3_2_mpsk_modulation.c
+```
+
+**Correct**:
+```bash
+# RIGHT: -lm after source file
+arm-linux-gnueabihf-gcc -o lab3_2_mpsk lab3_2_mpsk_modulation.c -lm
+```
+
+**Why**: Linker processes files left-to-right. Libraries must come AFTER object files that reference them.
+
+#### Error 3: `undefined reference to 'cos'`, `'sin'`, `'sqrt'`
+
+**Cause**: Missing `-lm`
+
+**Solution**:
+```bash
+arm-linux-gnueabihf-gcc -o lab3_2_mpsk lab3_2_mpsk_modulation.c -liio -lm
+```
+
+**Functions that require `-lm`**:
+- Trigonometric: `cos()`, `sin()`, `tan()`, `atan2()`
+- Exponential: `exp()`, `log()`, `pow()`
+- Rounding: `sqrt()`, `fabs()`, `ceil()`, `floor()`
+- Complex: `cabs()`, `creal()`, `cimag()`, `cexp()`, `carg()`, `conj()`
+
+#### Error 4: `'I' undeclared` (imaginary unit)
+
+**Cause**: Missing `#include <complex.h>` or `-std=c99`
+
+**Solution**: Ensure both are present:
+```c
+#include <complex.h>  // In source file
+
+// Compile with:
+// arm-linux-gnueabihf-gcc ... -std=c99
+```
+
+**Alternative**: Use `_Complex_I` or `1.0i` (C11)
+
+#### Error 5: Warning: `implicit declaration of function 'generate_rrc_filter'`
+
+**Cause**: Function used before declaration (forward reference issue)
+
+**Solution**: Ensure functions are declared before use:
+```c
+// Option 1: Define before use (current code structure)
+static void generate_rrc_filter(double *filter, int num_taps, int sps, double alpha) {
+    // Implementation
+}
+
+// Option 2: Forward declaration
+static void generate_rrc_filter(double *filter, int num_taps, int sps, double alpha);
+```
+
+#### Error 6: `warning: unused variable 'num_bits'`
+
+**Cause**: Variable declared but not used (harmless, but indicates possible logic error)
+
+**Solution**: Either use the variable or remove it:
+```c
+// If truly unused, remove it
+// If needed for future use, suppress warning:
+(void)num_bits;  // Explicitly mark as unused
+```
+
+**Better**: Use `-Wall -Wextra` during development to catch these early!
+
+### Step 6: Performance Optimization Verification
+
+Check if NEON optimizations were applied:
+
+```bash
+# Disassemble binary and search for NEON instructions
+arm-linux-gnueabihf-objdump -d lab3_2_mpsk | grep -i neon
+
+# Or check for SIMD instructions
+arm-linux-gnueabihf-objdump -d lab3_2_mpsk | grep -E "vld|vst|vmul|vadd"
+```
+
+**What to look for**:
+- `vld1` / `vst1`: NEON vector load/store
+- `vmul.f32` / `vmul.f64`: NEON vector multiply
+- `vadd.f32` / `vadd.f64`: NEON vector add
+- `vmla`: NEON multiply-accumulate (ideal for FIR filters!)
+
+**Example output**:
+```
+  8a4c:  f4 63 04 0f   vld1.32 {d16-d17}, [r3]
+  8a50:  f2 60 0c e2   vmul.f32 q8, q8, q9
+  8a54:  f2 20 0d 40   vadd.f32 q8, q8, q0
+```
+
+If you see these instructions, NEON is being used! 🚀
+
+### Step 7: Code Size Analysis
+
+Check binary size:
+
+```bash
+ls -lh lab3_2_mpsk
+arm-linux-gnueabihf-size lab3_2_mpsk
+```
+
+**Expected output**:
+```
+   text    data     bss     dec     hex filename
+  25678    1024    2048   28750    7056 lab3_2_mpsk
+```
+
+**Breakdown**:
+- `text`: Code segment (~25 KB) - contains executable instructions
+- `data`: Initialized global data (~1 KB) - Gray code tables, constellation points
+- `bss`: Uninitialized data (~2 KB) - RRC filter array, buffers
+- **Total**: ~28 KB (very small for embedded system!)
+
+### Step 8: Static Analysis (Optional but Recommended)
+
+Run static analysis to catch potential bugs:
+
+```bash
+# Install cppcheck
+sudo apt-get install cppcheck
+
+# Run analysis
+cppcheck --enable=all --std=c99 lab3_2_mpsk_modulation.c
+```
+
+**Look for**:
+- Memory leaks (forgot to `free()` allocated memory)
+- Null pointer dereferences
+- Array index out of bounds
+- Division by zero
+
+**Example**: If you see:
+```
+[lab3_2_mpsk_modulation.c:450]: (error) Memory leak: result
+```
+
+Fix by adding `free(result)` before return.
+
+### Step 9: Cross-Compilation Makefile (Recommended)
+
+Create a `Makefile` for easier builds:
+
+```makefile
+# Makefile for LAB 3.2 QPSK/8-PSK Modulation
+
+CC = arm-linux-gnueabihf-gcc
+CFLAGS = -std=c99 -O3 -march=armv7-a -mfpu=neon -mfloat-abi=hard -ffast-math -Wall -Wextra
+LDFLAGS = -liio -lm
+
+TARGET = lab3_2_mpsk
+SRC = lab3_2_mpsk_modulation.c
+
+all: $(TARGET)
+
+$(TARGET): $(SRC)
+	$(CC) $(CFLAGS) -o $(TARGET) $(SRC) $(LDFLAGS)
+	@echo "Build complete: $(TARGET)"
+	@arm-linux-gnueabihf-size $(TARGET)
+
+clean:
+	rm -f $(TARGET)
+
+verify:
+	@echo "=== Binary Info ==="
+	@file $(TARGET)
+	@echo ""
+	@echo "=== Size Breakdown ==="
+	@arm-linux-gnueabihf-size $(TARGET)
+	@echo ""
+	@echo "=== NEON Instructions ==="
+	@arm-linux-gnueabihf-objdump -d $(TARGET) | grep -E "vld|vst|vmul|vadd" | head -10 || echo "No NEON instructions found"
+
+.PHONY: all clean verify
+```
+
+**Usage**:
+```bash
+# Build
+make
+
+# Clean
+make clean
+
+# Build and verify
+make && make verify
+```
+
+### Step 10: Compiler Flag Summary Table
+
+| Flag | Purpose | Impact | Required? |
+|------|---------|--------|-----------|
+| `-std=c99` | Enable C99 standard | Complex number support | **YES** |
+| `-lm` | Link math library | All math functions | **YES** |
+| `-liio` | Link libiio | PlutoSDR hardware access | Optional* |
+| `-o <name>` | Output filename | Executable name | Recommended |
+| `-O3` | Max optimization | 2-3× faster | Recommended |
+| `-march=armv7-a` | Target Cortex-A9 | Better code gen | Recommended |
+| `-mfpu=neon` | Enable NEON SIMD | 2-4× faster | Recommended |
+| `-mfloat-abi=hard` | Hardware FP ABI | Faster FP calls | Recommended |
+| `-ffast-math` | Fast math | 10-20% faster | Optional** |
+| `-Wall -Wextra` | All warnings | Catch bugs | Recommended |
+
+\* **`-liio`**: Required if using `iio_*` functions for TX/RX. Not needed for loopback simulation.
+
+\*\* **`-ffast-math`**: Safe for this lab but may cause issues with extreme values (NaN, Inf).
+
+### Summary
+
+**Minimum command** (for testing):
+```bash
+arm-linux-gnueabihf-gcc -o lab3_2_mpsk lab3_2_mpsk_modulation.c -lm -std=c99
+```
+
+**Production command** (best performance):
+```bash
+arm-linux-gnueabihf-gcc -o lab3_2_mpsk lab3_2_mpsk_modulation.c \
+  -liio -lm -std=c99 -O3 -march=armv7-a -mfpu=neon \
+  -mfloat-abi=hard -ffast-math -Wall -Wextra
+```
+
+**Key takeaways**:
+- **Always use `-std=c99`** for complex number support
+- **Always use `-lm`** after source files for math functions
+- **Use `-O3 -mfpu=neon`** for 4-10× performance boost
+- **Check with `make verify`** to ensure NEON is enabled
+
+**Next**: Part 6 will cover deployment to PlutoSDR and real-world integration examples!
