@@ -731,6 +731,885 @@ if __name__ == "__main__":
 
 ---
 
+## METHOD 3: HOSTED APPLICATION IN C (PART 3/6 - THEORY DEEP DIVE)
+
+This section provides **deep theoretical understanding** of BER testing and eye diagrams, essential for implementing professional-grade measurement tools on PlutoSDR.
+
+**What you'll master**:
+
+✅ **BER Statistics**: Confidence intervals, sample size calculations, error probability distributions
+
+✅ **Eye Diagram Mathematics**: Sampling theory, optimal decision thresholds, eye closure analysis
+
+✅ **Q-Factor Theory**: Relationship to BER, Gaussian noise assumptions, measurement techniques
+
+✅ **ISI and Jitter**: Causes, mathematical models, impact on BER
+
+✅ **Practical Algorithms**: Efficient BER counting, real-time eye diagram construction, histogram-based Q-factor
+
+---
+
+### Section 1: BER Measurement Theory and Statistics
+
+#### **1.1 Probability of Bit Error**
+
+For binary signaling with AWGN (Additive White Gaussian Noise):
+
+```
+P_e = Q(√(2·SNR))
+
+where Q(x) is the Q-function (tail probability of Gaussian):
+
+Q(x) = (1/√(2π)) ∫[x to ∞] exp(-t²/2) dt
+
+For large x:
+Q(x) ≈ (1/(x√(2π))) · exp(-x²/2)
+```
+
+**For specific modulations**:
+
+```
+BPSK:   P_e = Q(√(2·Eb/N0))
+QPSK:   P_e = Q(√(2·Es/N0))     where Es = 2·Eb
+16-QAM: P_e ≈ (3/2)·Q(√(Es/(5·N0)))
+64-QAM: P_e ≈ (7/3)·Q(√(Es/(21·N0)))
+```
+
+**Key Insight**: BER decreases exponentially with SNR:
+- 3 dB SNR increase → ~10× lower BER
+- 6 dB SNR increase → ~100× lower BER
+
+#### **1.2 Statistical Confidence and Sample Size**
+
+**Problem**: How many bits to test for accurate BER measurement?
+
+**Binomial Distribution**: Number of errors follows binomial distribution:
+```
+n_errors ~ Binomial(n_bits, BER)
+
+Mean: μ = n_bits · BER
+Standard deviation: σ = √(n_bits · BER · (1 - BER))
+```
+
+**Confidence Interval** (95%):
+```
+BER_measured ± 1.96 · √(BER · (1 - BER) / n_bits)
+
+Example: BER = 10⁻⁴, n_bits = 10⁶
+  σ = √(10⁻⁴ · (1 - 10⁻⁴) / 10⁶) ≈ 10⁻⁵
+  CI: [10⁻⁴ - 1.96×10⁻⁵, 10⁻⁴ + 1.96×10⁻⁵]
+    = [8.04×10⁻⁵, 1.196×10⁻⁴]
+```
+
+**Rule of Thumb**: For reliable BER measurement:
+```
+Required bits ≈ 100 / BER
+
+Target BER    Required Bits    Time @ 1 Mbps
+----------------------------------------
+10⁻³          100,000          0.1 s
+10⁻⁴          1,000,000        1 s
+10⁻⁵          10,000,000       10 s
+10⁻⁶          100,000,000      100 s
+10⁻⁹          1,000,000,000    1000 s (17 min!)
+```
+
+**Practical Compromise**: Test until you observe 100-1000 errors:
+```
+if (bit_errors >= 100 && total_bits >= 10⁶) {
+    BER = bit_errors / total_bits;
+    // 95% confidence achieved
+}
+```
+
+#### **1.3 Symbol Error Rate (SER) vs. BER**
+
+**Relationship**: For Gray-coded M-ary modulation:
+```
+BER ≈ SER / log₂(M)
+
+Example: 16-QAM with Gray coding
+  log₂(16) = 4 bits/symbol
+  If SER = 4×10⁻⁴
+  Then BER ≈ 4×10⁻⁴ / 4 = 10⁻⁴
+```
+
+**Why Gray coding helps**:
+- Adjacent symbols differ by 1 bit
+- Single-symbol error typically causes 1 bit error (not all 4 bits)
+- Without Gray coding: SER ≈ BER (worst case)
+
+**C Implementation Strategy**:
+```c
+// Option 1: Count bit errors (more accurate)
+for (size_t i = 0; i < num_bits; i++) {
+    if (tx_bits[i] != rx_bits[i]) bit_errors++;
+}
+BER = (double)bit_errors / num_bits;
+
+// Option 2: Count symbol errors (faster, less accurate for high-order QAM)
+for (size_t i = 0; i < num_symbols; i++) {
+    if (tx_symbols[i] != rx_symbols[i]) symbol_errors++;
+}
+SER = (double)symbol_errors / num_symbols;
+BER_estimate = SER / bits_per_symbol;
+```
+
+---
+
+### Section 2: Eye Diagram Theory
+
+#### **2.1 What is an Eye Diagram?**
+
+An eye diagram is created by:
+1. Sampling received signal at multiple points per symbol
+2. Overlaying many symbol intervals (typically 100-1000 symbols)
+3. Displaying on oscilloscope-like plot
+
+**Mathematical Description**:
+```
+For symbol period T_s, sample at times:
+  t = k·T_s + τ,  where τ ∈ [0, T_s] and k = 0, 1, 2, ...
+
+Eye diagram: Plot of all samples (τ, r(k·T_s + τ))
+  where r(t) is received signal
+```
+
+#### **2.2 Eye Diagram Components**
+
+**Anatomy of an eye**:
+```
+         ┌──────────────────┐
+         │   Eye Opening    │← Maximum vertical opening
+    +1 ──┤                  ├── Decision threshold
+         │                  │
+     0 ──┼──────────────────┼──
+         │                  │
+    -1 ──┤                  ├──
+         │                  │
+         └──────────────────┘
+         ◄────────────────►
+         Eye Width = T_eye
+
+         ◄──►                 Timing jitter
+
+Optimal sampling time: τ_opt = T_s / 2 (center of eye)
+```
+
+**Key Measurements**:
+
+1. **Eye Height** (V_eye):
+   ```
+   V_eye = |μ₁ - μ₀| - 3·(σ₁ + σ₀)
+
+   where:
+     μ₁ = mean of "1" samples
+     μ₀ = mean of "0" samples
+     σ₁ = std dev of "1" samples
+     σ₀ = std dev of "0" samples
+
+   Factor of 3σ ensures 99.7% of samples within bounds
+   ```
+
+2. **Eye Width** (T_eye):
+   ```
+   T_eye = T_s - 2·t_jitter
+
+   where t_jitter is timing uncertainty (jitter)
+
+   Typical: T_eye > 0.6·T_s (40% margin)
+   ```
+
+3. **Eye Opening** (Area):
+   ```
+   Eye_opening = V_eye × T_eye
+
+   Larger opening → Better signal quality
+   Smaller opening → Approaching error threshold
+   ```
+
+#### **2.3 Factors that Close the Eye**
+
+**1. Inter-Symbol Interference (ISI)**:
+```
+Caused by:
+- Limited bandwidth (incomplete pulse shaping)
+- Multipath propagation
+- Imperfect filtering
+
+Mathematical model:
+  r(t) = Σ[k] a_k·h(t - k·T_s) + n(t)
+
+  where h(t) is channel impulse response
+
+If h(t) has long tail → symbols overlap → ISI
+```
+
+**2. Timing Jitter**:
+```
+Types:
+- Random jitter (Gaussian, from thermal noise)
+- Deterministic jitter (from clock instability)
+
+Effect: Horizontal eye closure
+
+Jitter RMS = √(E[(t_actual - t_ideal)²])
+```
+
+**3. Additive Noise (AWGN)**:
+```
+Effect: Vertical eye closure
+
+Noise blurs each trace → thicker lines → reduced V_eye
+```
+
+**4. Carrier Frequency Offset (CFO)**:
+```
+In PlutoSDR: TX and RX LOs may differ by Δf
+
+Effect: Rotating constellation → eye rotates → closure
+
+Maximum tolerable Δf:
+  Δf_max < 1 / (10·T_symbol)
+
+  For 100 ksps: Δf_max < 10 kHz
+```
+
+#### **2.4 Optimal Sampling Time**
+
+**Decision Rule**: Sample at time τ_opt that maximizes eye opening
+
+**Algorithm**:
+```
+1. Generate eye diagram samples for τ ∈ [0, T_s]
+2. For each τ, compute eye height V_eye(τ)
+3. Find: τ_opt = argmax V_eye(τ)
+4. Use τ_opt for symbol decisions
+
+Mathematically:
+  τ_opt = argmax |μ₁(τ) - μ₀(τ)| / (σ₁(τ) + σ₀(τ))
+```
+
+**C Implementation Approach**:
+```c
+// Collect samples at multiple phases
+#define PHASES_PER_SYMBOL 8
+
+for (int phase = 0; phase < PHASES_PER_SYMBOL; phase++) {
+    double tau = (double)phase / PHASES_PER_SYMBOL;
+
+    // Sample at this phase across all symbols
+    for (int k = 0; k < num_symbols; k++) {
+        int sample_idx = k * sps + (int)(tau * sps);
+        eye_samples[phase][k] = rx_signal[sample_idx];
+    }
+
+    // Compute eye height at this phase
+    compute_eye_metrics(eye_samples[phase], num_symbols);
+}
+
+// Find phase with maximum eye opening
+int best_phase = find_max_eye_opening();
+```
+
+---
+
+### Section 3: Q-Factor and Signal Quality
+
+#### **3.1 Q-Factor Definition**
+
+**Q-factor**: Signal-to-noise ratio at decision point
+
+```
+Q = |μ₁ - μ₀| / (σ₁ + σ₀)
+
+where:
+  μ₁, μ₀ = mean levels for "1" and "0"
+  σ₁, σ₀ = standard deviations
+
+Interpretation:
+  Q = 6:  99.73% correct decisions (BER ≈ 10⁻³)
+  Q = 7:  BER ≈ 10⁻⁶
+  Q = 8:  BER ≈ 10⁻⁹
+```
+
+**Relationship to BER** (for Gaussian noise):
+```
+BER = Q(Q_factor)
+
+Approximation:
+  BER ≈ (1/(Q_factor·√(2π))) · exp(-Q_factor² / 2)
+
+Example:
+  Q = 6  → BER = Q(6) ≈ 9.87×10⁻¹⁰
+  Q = 7  → BER = Q(7) ≈ 1.28×10⁻¹²
+```
+
+**In dB**:
+```
+Q_dB = 20·log₁₀(Q)
+
+Q = 6  → Q_dB = 15.56 dB
+Q = 7  → Q_dB = 16.90 dB
+
+Relationship to SNR:
+  For BPSK: Q² = 2·SNR
+  For QPSK: Q² = SNR (per dimension)
+```
+
+#### **3.2 Measuring Q-Factor from Eye Diagram**
+
+**Histogram Method** (most practical for PlutoSDR):
+
+**Step 1**: Sample signal at optimal decision time τ_opt
+```c
+for (int k = 0; k < num_symbols; k++) {
+    int sample_idx = k * samples_per_symbol + optimal_phase;
+    double sample = rx_signal[sample_idx];
+    samples[k] = sample;
+}
+```
+
+**Step 2**: Separate "1" and "0" samples based on known TX bits
+```c
+for (int k = 0; k < num_symbols; k++) {
+    if (tx_bits[k] == 1) {
+        ones_samples[n_ones++] = samples[k];
+    } else {
+        zeros_samples[n_zeros++] = samples[k];
+    }
+}
+```
+
+**Step 3**: Compute means and standard deviations
+```c
+double mu_1 = mean(ones_samples, n_ones);
+double mu_0 = mean(zeros_samples, n_zeros);
+double sigma_1 = stddev(ones_samples, n_ones);
+double sigma_0 = stddev(zeros_samples, n_zeros);
+```
+
+**Step 4**: Calculate Q-factor
+```c
+double Q_factor = fabs(mu_1 - mu_0) / (sigma_1 + sigma_0);
+double Q_dB = 20 * log10(Q_factor);
+```
+
+**Step 5**: Estimate BER from Q
+```c
+double estimated_BER = 0.5 * erfc(Q_factor / sqrt(2));
+// erfc = complementary error function (available in <math.h>)
+```
+
+#### **3.3 Alternative Q-Factor Methods**
+
+**Peak-to-Peak Method** (less accurate, but simpler):
+```c
+double peak_1 = max(ones_samples, n_ones);
+double peak_0 = min(zeros_samples, n_zeros);
+double Q_approx = fabs(peak_1 - peak_0) / (sigma_1 + sigma_0);
+```
+
+**Percentile Method** (robust to outliers):
+```c
+// Use 0.1% and 99.9% percentiles instead of min/max
+double p999_1 = percentile(ones_samples, n_ones, 0.999);
+double p001_0 = percentile(zeros_samples, n_zeros, 0.001);
+double Q_robust = (p999_1 - p001_0) / (sigma_1 + sigma_0);
+```
+
+---
+
+### Section 4: ISI (Inter-Symbol Interference) Analysis
+
+#### **4.1 ISI Mathematical Model**
+
+**Baseband Signal Model**:
+```
+r(t) = Σ[k=-∞ to ∞] a_k · p(t - k·T_s) + n(t)
+
+where:
+  a_k = transmitted symbols
+  p(t) = combined TX filter, channel, RX filter response
+  n(t) = AWGN
+
+At sampling time t = m·T_s:
+  r(m·T_s) = a_m · p(0) + Σ[k≠m] a_k · p((m-k)·T_s) + n(m·T_s)
+             ^^^^^^^^^^^^   ^^^^^^^^^^^^^^^^^^^^^^^   ^^^^^^^^^^
+             desired        ISI                       noise
+```
+
+**ISI Power**:
+```
+P_ISI = Σ[k≠0] p²(k·T_s)
+
+For zero-ISI (Nyquist criterion):
+  p(k·T_s) = 0  for all k ≠ 0
+
+Achieved by raised-cosine or RRC pulse shaping
+```
+
+**Impact on BER**:
+```
+Effective SNR with ISI:
+  SNR_eff = SNR / (1 + ISI_factor)
+
+  where ISI_factor = P_ISI / p²(0)
+
+Example:
+  SNR = 20 dB, ISI_factor = 0.2
+  SNR_eff = 20 / 1.2 = 16.67 dB
+  → BER degrades by 3.3 dB!
+```
+
+#### **4.2 Eye Diagram ISI Indicators**
+
+**Closed Eye** (severe ISI):
+```
+Eye height → 0
+Multiple crossing points
+Thick, fuzzy traces
+```
+
+**Moderate ISI**:
+```
+Eye still open but distorted
+Asymmetric eye shape
+Unequal rise/fall times
+```
+
+**Minimal ISI** (ideal):
+```
+Wide eye opening
+Clean crossing at 50% level
+Symmetric shape
+```
+
+**C Implementation - ISI Measurement**:
+```c
+// Measure eye closure due to ISI
+double measure_isi_closure(complex double *rx_signal, size_t len, int sps) {
+    // Sample at non-optimal times (edges of symbol period)
+    size_t num_symbols = len / sps;
+
+    double edge_samples[num_symbols];
+    double center_samples[num_symbols];
+
+    for (size_t k = 0; k < num_symbols; k++) {
+        center_samples[k] = cabs(rx_signal[k * sps + sps/2]);
+        edge_samples[k] = cabs(rx_signal[k * sps]);  // Symbol boundary
+    }
+
+    double sigma_center = stddev(center_samples, num_symbols);
+    double sigma_edge = stddev(edge_samples, num_symbols);
+
+    // High sigma_edge relative to sigma_center indicates ISI
+    double isi_ratio = sigma_edge / sigma_center;
+
+    return isi_ratio;  // > 1.5 indicates significant ISI
+}
+```
+
+---
+
+### Section 5: Jitter Analysis
+
+#### **5.1 Types of Jitter**
+
+**Random Jitter (RJ)**:
+```
+Distribution: Gaussian
+
+  t_jitter ~ N(0, σ_RJ²)
+
+Causes:
+  - Thermal noise
+  - Shot noise in clock circuits
+  - Phase noise in PLLs
+
+Unbounded: Can theoretically be arbitrarily large
+```
+
+**Deterministic Jitter (DJ)**:
+```
+Distribution: Bounded (peaks at specific values)
+
+Types:
+  1. Periodic jitter: From interfering signals
+  2. Data-dependent jitter: From ISI
+  3. Bounded uncorrelated jitter: From EMI
+
+Bounded: |DJ| ≤ DJ_max
+```
+
+**Total Jitter (TJ)**:
+```
+TJ = RJ + DJ
+
+At BER = 10⁻¹²:
+  TJ = DJ + 14·σ_RJ  (14σ covers 10⁻¹² probability)
+```
+
+#### **5.2 Jitter Measurement from Eye Diagram**
+
+**Method 1: Zero-Crossing Analysis**
+```c
+// Find all zero crossings in eye diagram
+for (int k = 0; k < num_symbols - 1; k++) {
+    if (rx_signal[k] * rx_signal[k+1] < 0) {
+        // Zero crossing detected between k and k+1
+        double t_cross = interpolate_zero_crossing(rx_signal, k);
+        zero_crossings[n_crossings++] = t_cross;
+    }
+}
+
+// Compute jitter as std dev of crossing times
+double t_mean = mean(zero_crossings, n_crossings);
+double jitter_rms = 0;
+for (int i = 0; i < n_crossings; i++) {
+    jitter_rms += (zero_crossings[i] - t_mean) * (zero_crossings[i] - t_mean);
+}
+jitter_rms = sqrt(jitter_rms / n_crossings);
+
+// Express as fraction of symbol period
+double jitter_UI = jitter_rms / T_symbol;  // UI = Unit Interval
+```
+
+**Method 2: Eye Width Measurement**
+```c
+// Measure horizontal eye opening at threshold level
+double threshold = (mu_1 + mu_0) / 2;
+
+// Find leftmost and rightmost times where signal crosses threshold
+double t_left = find_crossing_time(rx_signal, threshold, RISING_EDGE, LEFT);
+double t_right = find_crossing_time(rx_signal, threshold, FALLING_EDGE, RIGHT);
+
+double eye_width = t_right - t_left;
+double jitter = (T_symbol - eye_width) / 2;
+```
+
+#### **5.3 Jitter Impact on BER**
+
+**BER Degradation Formula**:
+```
+BER_with_jitter = BER_no_jitter · (1 + (σ_jitter / T_eye)²)
+
+Example:
+  BER without jitter: 10⁻⁶
+  Jitter: σ_jitter = 0.1·T_symbol
+  Eye width: T_eye = 0.8·T_symbol
+
+  BER_with_jitter = 10⁻⁶ · (1 + (0.1/0.8)²)
+                  = 10⁻⁶ · 1.0156
+                  ≈ 1.016×10⁻⁶  (1.6% increase)
+```
+
+**Rule of Thumb**:
+```
+For BER < 10⁻⁹:
+  Total jitter < 0.2·T_symbol (20% of symbol period)
+
+For BER < 10⁻⁶:
+  Total jitter < 0.3·T_symbol (30% of symbol period)
+```
+
+---
+
+### Section 6: PlutoSDR-Specific Considerations
+
+#### **6.1 AD9361 Sampling Limitations**
+
+**ADC/DAC Resolution**: 12 bits
+```
+Quantization levels: 2¹² = 4096
+
+Quantization SNR: 6.02·N + 1.76 dB
+                = 6.02·12 + 1.76 = 74 dB
+
+This is theoretical maximum SNR - actual SNR lower due to:
+  - Thermal noise
+  - Phase noise
+  - Spurious signals
+
+Practical SNR: 60-65 dB for clean signals
+```
+
+**Impact on Q-Factor**:
+```
+Maximum measurable Q_factor ≈ 10·log₁₀(SNR) / 2
+                            ≈ 10·log₁₀(60 dB) / 2
+                            ≈ 9 (corresponds to BER ≈ 10⁻¹⁹)
+
+In practice, PlutoSDR can measure Q up to ~8-9
+  → Minimum measurable BER ≈ 10⁻¹⁵
+```
+
+#### **6.2 Clock Accuracy**
+
+**AD9361 Clock Sources**:
+```
+Internal oscillator: ±25 ppm accuracy
+External clock: Accuracy depends on source
+
+Frequency error at 2.4 GHz:
+  Δf = 2.4 GHz · 25 ppm = 60 kHz
+
+For 100 ksps symbol rate:
+  CFO/symbol_rate = 60 kHz / 100 kHz = 0.6
+
+This is significant! Need carrier frequency correction.
+```
+
+**Jitter from Clock**:
+```
+AD9361 phase noise: -145 dBc/Hz @ 1 MHz offset
+
+Integrated jitter (10 kHz to 40 MHz):
+  σ_jitter ≈ 0.5 ps (picoseconds)
+
+At 100 ksps (T_symbol = 10 μs):
+  σ_jitter / T_symbol = 0.5 ps / 10 μs = 5×10⁻⁸
+
+This is negligible for typical SDR applications
+```
+
+#### **6.3 I/Q Imbalance**
+
+**Gain Imbalance**:
+```
+I_actual = α·I_ideal
+Q_actual = β·Q_ideal
+
+Typical: |α - β| < 0.5 dB
+
+Effect on constellation:
+  - Elliptical instead of circular
+  - Increased BER
+```
+
+**Phase Imbalance**:
+```
+I_actual = I_ideal
+Q_actual = Q_ideal·cos(Δφ) + I_ideal·sin(Δφ)
+
+Typical: |Δφ| < 2°
+
+Effect:
+  - Rotated constellation
+  - Crosstalk between I and Q
+```
+
+**Correction in C**:
+```c
+// Estimate and correct I/Q imbalance
+typedef struct {
+    double alpha;  // I-channel gain
+    double beta;   // Q-channel gain
+    double phi;    // Phase imbalance (radians)
+} IQImbalance;
+
+void correct_iq_imbalance(complex double *samples, size_t len, IQImbalance *imb) {
+    for (size_t i = 0; i < len; i++) {
+        double I = creal(samples[i]);
+        double Q = cimag(samples[i]);
+
+        // Correct gain imbalance
+        I /= imb->alpha;
+        Q /= imb->beta;
+
+        // Correct phase imbalance
+        double I_corr = I;
+        double Q_corr = Q * cos(imb->phi) - I * sin(imb->phi);
+
+        samples[i] = I_corr + I * Q_corr;
+    }
+}
+```
+
+#### **6.4 Memory and Processing Constraints**
+
+**ARM Cortex-A9 @ 667 MHz**:
+```
+Available memory: ~512 MB total
+  - ~300 MB free for applications
+
+For BER testing:
+  - Need to store TX and RX bits
+  - Need buffers for eye diagram samples
+
+Memory budget:
+  10⁷ bits = 1.25 MB (manageable)
+  10⁸ bits = 12.5 MB (still OK)
+  10⁹ bits = 125 MB (approaching limit)
+```
+
+**Processing Time**:
+```
+BER counting: ~10⁶ bits/second (naive loop)
+With NEON: ~10⁷ bits/second (10× faster)
+
+Eye diagram: ~10⁴ symbols/second (without optimization)
+With NEON: ~10⁵ symbols/second
+
+Practical approach:
+  - Process in chunks (streaming)
+  - Use circular buffers
+  - Offload computation to host PC if needed
+```
+
+---
+
+### Section 7: Algorithms for Efficient Implementation
+
+#### **7.1 Fast BER Counting**
+
+**Naive Method** (slow):
+```c
+for (size_t i = 0; i < n_bits; i++) {
+    if (tx_bits[i] != rx_bits[i]) errors++;
+}
+// O(n) bit-by-bit comparison
+```
+
+**Optimized Method** (byte-wise XOR + popcount):
+```c
+// Pack bits into bytes (8 bits per byte)
+size_t n_bytes = n_bits / 8;
+uint8_t *tx_bytes = pack_bits_to_bytes(tx_bits, n_bits);
+uint8_t *rx_bytes = pack_bits_to_bytes(rx_bits, n_bits);
+
+size_t errors = 0;
+for (size_t i = 0; i < n_bytes; i++) {
+    uint8_t diff = tx_bytes[i] ^ rx_bytes[i];
+    errors += __builtin_popcount(diff);  // Count set bits (errors)
+}
+// O(n/8) with hardware popcount instruction
+```
+
+**NEON SIMD Method** (fastest on ARM):
+```c
+// Process 16 bytes at a time
+for (size_t i = 0; i < n_bytes; i += 16) {
+    uint8x16_t tx_vec = vld1q_u8(&tx_bytes[i]);
+    uint8x16_t rx_vec = vld1q_u8(&rx_bytes[i]);
+    uint8x16_t diff_vec = veorq_u8(tx_vec, rx_vec);
+    errors += vcntq_u8(diff_vec);  // NEON popcount
+}
+// ~100× faster than naive method
+```
+
+#### **7.2 Streaming Eye Diagram Construction**
+
+**Memory-Efficient Approach**:
+```c
+// Don't store all samples - build histogram directly
+
+#define EYE_PHASES 16
+#define EYE_LEVELS 256
+
+uint32_t eye_histogram[EYE_PHASES][EYE_LEVELS];
+
+void update_eye_diagram(complex double *rx_signal, size_t len, int sps) {
+    for (size_t k = 0; k < len / sps; k++) {
+        for (int phase = 0; phase < EYE_PHASES; phase++) {
+            int sample_idx = k * sps + (phase * sps) / EYE_PHASES;
+            double amplitude = cabs(rx_signal[sample_idx]);
+
+            // Quantize to histogram bin
+            int level = (int)((amplitude + 1.0) * 127.5);
+            if (level < 0) level = 0;
+            if (level > 255) level = 255;
+
+            eye_histogram[phase][level]++;
+        }
+    }
+}
+// Memory: 16 × 256 × 4 bytes = 16 KB (vs MB for raw samples)
+```
+
+#### **7.3 Online Q-Factor Estimation**
+
+**Welford's Algorithm** (numerically stable, one-pass):
+```c
+typedef struct {
+    size_t n;
+    double mean;
+    double M2;  // Sum of squared deviations
+} OnlineStats;
+
+void update_stats(OnlineStats *stats, double value) {
+    stats->n++;
+    double delta = value - stats->mean;
+    stats->mean += delta / stats->n;
+    stats->M2 += delta * (value - stats->mean);
+}
+
+double get_variance(OnlineStats *stats) {
+    return stats->M2 / stats->n;
+}
+
+double get_stddev(OnlineStats *stats) {
+    return sqrt(get_variance(stats));
+}
+
+// Usage for Q-factor:
+OnlineStats ones_stats = {0};
+OnlineStats zeros_stats = {0};
+
+for (size_t k = 0; k < num_samples; k++) {
+    double sample = rx_signal[k];
+    if (tx_bits[k] == 1) {
+        update_stats(&ones_stats, sample);
+    } else {
+        update_stats(&zeros_stats, sample);
+    }
+}
+
+double mu_1 = ones_stats.mean;
+double mu_0 = zeros_stats.mean;
+double sigma_1 = get_stddev(&ones_stats);
+double sigma_0 = get_stddev(&zeros_stats);
+
+double Q_factor = fabs(mu_1 - mu_0) / (sigma_1 + sigma_0);
+```
+
+---
+
+### Summary of Theory
+
+This theory section covered:
+
+✅ **BER Statistics**: Binomial distribution, confidence intervals, required sample sizes for accurate measurement
+
+✅ **Eye Diagrams**: Mathematical construction, key metrics (height, width, opening), factors causing closure
+
+✅ **Q-Factor**: Definition, relationship to BER, histogram-based measurement technique
+
+✅ **ISI Analysis**: Mathematical model, impact on eye diagrams, power measurement
+
+✅ **Jitter Analysis**: Random vs deterministic jitter, measurement methods, BER degradation formulas
+
+✅ **PlutoSDR Constraints**: AD9361 resolution limits, clock accuracy, I/Q imbalance correction
+
+✅ **Efficient Algorithms**: Fast BER counting with NEON, streaming eye diagrams, online Q-factor estimation
+
+**Key Formulas for Implementation**:
+```
+BER = errors / total_bits
+Q_factor = |μ₁ - μ₀| / (σ₁ + σ₀)
+Eye_height = |μ₁ - μ₀| - 3·(σ₁ + σ₀)
+Confidence_interval = BER ± 1.96·√(BER·(1-BER)/n_bits)
+```
+
+**Next**: Part 4 will provide complete C source code implementing:
+- Multi-modulation BER testing framework
+- Real-time eye diagram generator
+- Q-factor measurement with statistical analysis
+- ISI and jitter measurement tools
+- PlutoSDR hardware integration
+
+---
+
 ## Summary
 
 In this lab, you learned:
