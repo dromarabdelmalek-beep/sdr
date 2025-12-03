@@ -4,6 +4,16 @@
 
 ---
 
+## 🚀 Quick Start
+
+**New to PlutoSDR?**
+
+**[📘 QUICKSTART Guide →](../QUICKSTART.md)** - Complete setup and first programs in 30 minutes!
+
+Already set up? Jump to **[Module 1: LAB 0 (Hello PlutoSDR)](labs/module1_foundations/LAB_0_HELLO_PLUTOSDR.md)** to begin the curriculum.
+
+---
+
 ## 📚 Repository Structure
 
 ```

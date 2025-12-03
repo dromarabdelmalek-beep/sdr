@@ -7,6 +7,21 @@ Firmware License : [![Many Licenses](https://img.shields.io/badge/license-LGPL2+
 
 ---
 
+## 🚀 Quick Start
+
+**New to PlutoSDR? Start here!**
+
+**[📘 QUICKSTART Guide →](QUICKSTART.md)** - Get up and running in 30 minutes!
+
+This guide covers:
+- Hardware setup and connection
+- Software installation (Python, PyADI-IIO, GNU Radio)
+- Your first SDR programs (FM radio reception, tone transmission)
+- Navigation through the curriculum
+- Troubleshooting common issues
+
+---
+
 ## Comprehensive SDR Documentation
 
 This repository has been enhanced with **55,600+ lines of comprehensive educational documentation** covering Software-Defined Radio theory and practice with the PlutoSDR platform.
