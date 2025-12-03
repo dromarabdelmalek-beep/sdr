@@ -22,7 +22,8 @@ docs/
 ├── projects/                      # Advanced integration projects
 │   ├── PROJECT2_IOT_SATELLITE_ENHANCED.md  (✅ Complete)
 │   ├── PROJECT3_SECURE_VIDEO_ENHANCED.md   (✅ Complete)
-│   └── PROJECT4_FREQUENCY_HOPPING.md       (✅ Complete)
+│   ├── PROJECT4_FREQUENCY_HOPPING.md       (✅ Complete)
+│   └── PROJECT5_TACTICAL_COMMS_MIL_STD.md  (✅ Complete)
 │
 ├── analysis/                      # Coverage analysis and status tracking
 │   ├── SDR_TERM_COVERAGE_ANALYSIS.md
@@ -216,10 +217,19 @@ Each lab includes **4 comprehensive parts**:
 - **Duration**: 12-18 hours
 
 ### PROJECT 4: Frequency-Hopping Datalink (✅ Complete)
-- **Lines**: 1,641
+- **Lines**: 1,640
 - **Technologies**: Dual PlutoSDRs, FHSS (500 hops/sec), FSK, anti-jamming
 - **Difficulty**: Expert
 - **Duration**: 8-12 hours
+
+### PROJECT 5: Tactical Voice/Data Radio - MIL-STD Compliant (✅ Complete)
+- **Lines**: 1,755
+- **Technologies**: PlutoSDR, MELP voice codec, AES-256-GCM encryption, FHSS (50 hops/sec), DSSS (16-chip), MIL-STD-188-181D
+- **Military Standards**: MIL-STD-188-181D, MIL-STD-188-141E, STANAG 4285, FIPS 197 (AES)
+- **Features**: Secure voice (2400 bps), encrypted data (9600 bps), frequency hopping, anti-jam waveforms, link quality monitoring
+- **Difficulty**: Expert (Military Communications)
+- **Duration**: 15-20 hours
+- **Real-World Application**: Squad-level tactical communications, convoy coordination, forward observer links
 
 ---
 
@@ -227,25 +237,28 @@ Each lab includes **4 comprehensive parts**:
 
 ### Current Status (Updated December 3, 2025)
 - **Total Labs Created**: 13 labs
-- **Total Projects**: 3 projects
+- **Total Projects**: **4 projects** (IoT-Satellite, Secure Video, Freq-Hopping, Tactical Radio)
 - **Total Lab Documentation**: **41,385 lines** (Modules 1-3)
-- **Total Project Documentation**: ~6,629 lines
-- **Grand Total**: **~48,000 lines**
+- **Total Project Documentation**: **8,383 lines** (4 complete projects)
+- **Total Guides Documentation**: **5,810 lines** (6 comprehensive guides)
+- **Grand Total**: **~55,600 lines**
 - **SDR Terms Covered**: 130+ / 170 (76%)
 - **Categories at 100%**: Sampling Theory, Digital Modulation
 - **Average Lab Length**: 3,183 lines (including comprehensive Method 3)
+- **Average Project Length**: 2,096 lines
 - **Code-to-Theory Ratio**: 65% code, 35% theory
 
 ### Module-by-Module Breakdown
 
-| Module | Labs | Total Lines | Method 3 Status | Avg Lines/Lab |
-|--------|------|-------------|-----------------|---------------|
-| **Module 1** | 4 | 11,360 | ✅ Complete | 2,840 |
-| **Module 2** | 3 | 11,410 | ✅ Complete | 3,803 |
-| **Module 3** | 5 | **18,615** | ✅ **COMPLETE** | **3,723** |
-| **Module 4-6** | 0 | 0 | ⏳ Planned | - |
-| **Projects** | 3 | 6,629 | ✅ Complete | 2,210 |
-| **TOTAL** | **13** | **41,385** | **61% complete** | **3,183** |
+| Module | Labs/Projects | Total Lines | Method 3 Status | Avg Lines |
+|--------|---------------|-------------|-----------------|-----------|
+| **Module 1** | 4 labs | 11,360 | ✅ Complete | 2,840 |
+| **Module 2** | 3 labs | 11,410 | ✅ Complete | 3,803 |
+| **Module 3** | 5 labs | **18,615** | ✅ **COMPLETE** | **3,723** |
+| **Module 4-6** | 0 labs | 0 | ⏳ Planned | - |
+| **Projects** | **4 projects** | **8,383** | ✅ Complete | **2,096** |
+| **Guides** | 6 guides | 5,810 | ✅ Complete | 968 |
+| **TOTAL** | **16+6** | **55,578** | **~73% complete** | **2,526** |
 
 ### Coverage by Category
 1. ✅ **Sampling/Conversion** - 100% (complete Method 3)

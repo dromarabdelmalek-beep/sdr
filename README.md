@@ -9,14 +9,16 @@ Firmware License : [![Many Licenses](https://img.shields.io/badge/license-LGPL2+
 
 ## Comprehensive SDR Documentation
 
-This repository has been enhanced with **48,000+ lines of comprehensive educational documentation** covering Software-Defined Radio theory and practice with the PlutoSDR platform.
+This repository has been enhanced with **55,600+ lines of comprehensive educational documentation** covering Software-Defined Radio theory and practice with the PlutoSDR platform.
 
 **[View Complete Documentation →](docs/README.md)**
 
 ### What's Included
 
 - **13 Hands-On Labs** across 3 modules (41,385 lines of detailed tutorials)
-- **3 Complete Projects** with full source code and deployment guides
+- **4 Complete Projects** with full source code and deployment guides (8,383 lines)
+  - IoT-Satellite DSSS Link, Secure Video Streaming, Frequency-Hopping Datalink, Tactical Voice/Data Radio (MIL-STD)
+- **6 Comprehensive Guides** for firmware and application development (5,810 lines)
 - **130+ SDR Terms** covered with practical implementations
 - **Multiple Implementation Methods**:
   - Method 1: GNU Radio visual programming
