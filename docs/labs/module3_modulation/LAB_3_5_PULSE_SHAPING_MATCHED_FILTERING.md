@@ -670,6 +670,706 @@ if __name__ == "__main__":
 
 ---
 
+## Method 3: Hosted Application (C Implementation)
+
+This method implements pulse shaping and matched filtering in **production-ready C code** for the PlutoSDR's ARM Cortex-A9 processor, providing real-time performance and deep understanding of the complete transmit-receive filter chain.
+
+---
+
+### **Part 3: Theory Deep Dive** 📚
+
+This section provides comprehensive mathematical foundations and practical insights into pulse shaping, matched filtering, and timing recovery for digital communication systems.
+
+---
+
+#### **3.1 Mathematical Foundation of Pulse Shaping**
+
+**Why Pulse Shaping?**
+
+Rectangular pulses used in basic modulation have infinite bandwidth:
+
+```
+Rectangular pulse:
+  p(t) = { 1,  0 ≤ t < T
+         { 0,  otherwise
+
+Fourier Transform:
+  P(f) = T · sinc(πfT) = T · sin(πfT)/(πfT)
+
+Bandwidth: Infinite (sinc has slow 1/f decay)
+Power Spectral Density: |P(f)|² ∝ sinc²(πfT)
+
+Problem:
+  - 99% of power in BW ≈ 20/T Hz (very wide!)
+  - Adjacent channel interference
+  - Regulatory violations (FCC/ETSI limits)
+```
+
+**Nyquist's Solution**: Use pulses that satisfy:
+
+```
+p(kT) = { 1,  k = 0
+        { 0,  k = ±1, ±2, ...
+
+In frequency domain (Nyquist Criterion):
+  ∑[n=-∞→∞] P(f + n/T) = T,  for |f| ≤ 1/(2T)
+
+This ensures zero ISI at symbol-spaced sampling instants!
+```
+
+---
+
+#### **3.2 Raised Cosine (RC) Filter**
+
+**Time Domain**:
+
+```
+         sin(πt/T)        cos(βπt/T)
+p(t) = ------------ · -------------------
+          πt/T       1 - (2βt/T)²
+
+where:
+  T = symbol period
+  β = roll-off factor (0 ≤ β ≤ 1)
+```
+
+**Frequency Domain**:
+
+```
+         ⎧ T,                            |f| ≤ (1-β)/(2T)
+         ⎪
+P(f) =   ⎨ T/2 · [1 + cos(πT/(β)·       (1-β)/(2T) < |f| ≤ (1+β)/(2T)
+         ⎪      (|f| - (1-β)/(2T)))]
+         ⎪
+         ⎩ 0,                            |f| > (1+β)/(2T)
+
+Bandwidth: BW = (1 + β)/(2T) Hz
+
+Roll-off factor β controls trade-off:
+  β = 0:  BW = 1/(2T)  (minimum, but infinite time extent)
+  β = 0.5: BW = 0.75/T  (balanced)
+  β = 1:  BW = 1/T     (wide, but compact in time)
+```
+
+**Key Properties**:
+
+1. **Zero ISI**: p(kT) = δ(k) for all β
+2. **Finite bandwidth**: BW = (1+β)/(2T) Hz
+3. **Smooth spectrum**: No discontinuities
+4. **Time decay**: p(t) ∝ 1/t³ for t → ∞ (much faster than sinc's 1/t)
+
+**Roll-off Factor Trade-offs**:
+
+| β | Bandwidth | Time Decay | Sensitivity to Timing | Use Case |
+|---|-----------|------------|----------------------|----------|
+| 0.0 | 1/(2T) (min) | Slow (1/t) | Very high | Theoretical only |
+| 0.25 | 0.625/T | Medium | Moderate | Satellite, DSL |
+| 0.35 | 0.675/T | Medium-fast | Moderate | LTE, WiFi |
+| 0.5 | 0.75/T | Fast | Low | General-purpose |
+| 1.0 | 1/T (max) | Very fast (1/t³) | Very low | Low SNR channels |
+
+---
+
+#### **3.3 Root-Raised Cosine (RRC) Filter**
+
+**Problem with RC**: If we use RC at TX only, receiver has no matched filter.
+
+**Solution**: Split RC between TX and RRC:
+
+```
+RC(f) = RRC_TX(f) · RRC_RX(f)
+
+where:
+  RRC_TX(f) = √(RC(f))
+  RRC_RX(f) = √(RC(f))
+
+Convolution in time:
+  p_RC(t) = p_RRC(t) ⊗ p_RRC(t)
+```
+
+**RRC Time Domain** (no closed form, must compute numerically):
+
+```
+              sin(π(1-β)t/T) + (4βt/T)·cos(π(1+β)t/T)
+p_RRC(t) = -----------------------------------------------
+                    (πt/T) · (1 - (4βt/T)²)
+
+Special cases (handle singularities):
+
+At t = 0:
+  p_RRC(0) = (1 + β(4/π - 1))
+
+At t = ±T/(4β):
+  p_RRC(±T/(4β)) = (β/√2) · [(1+2/π)sin(π/(4β)) + (1-2/π)cos(π/(4β))]
+```
+
+**Why RRC is Optimal**:
+
+1. **Matched filtering**: RRC_RX is matched to RRC_TX → maximizes SNR
+2. **Zero ISI**: Combined response is RC → zero ISI at sampling instants
+3. **Bandwidth efficiency**: Uses minimum bandwidth for given β
+4. **Practical**: Finite time extent (truncate at ±6T with <1% error)
+
+**Matched Filter Theorem** (North, 1943):
+
+```
+For signal s(t) in AWGN with PSD N₀/2:
+
+Optimal filter: h(t) = s*(T - t)  (time-reversed conjugate)
+
+SNR at output: SNR_out = (2·E_s) / N₀
+
+where E_s = ∫|s(t)|² dt is signal energy
+
+Proof sketch:
+  - Output y(T) = ∫s(τ)h(T-τ)dτ + noise
+  - SNR = |y(T)|² / σ²
+  - Cauchy-Schwarz inequality → maximum when h(t) ∝ s*(T-t)
+```
+
+---
+
+#### **3.4 Practical RRC Filter Design**
+
+**Sampling Requirements**:
+
+```
+RRC filter taps: h[n] = p_RRC(n·T_s)
+
+where:
+  T_s = sample period
+  T = symbol period
+  sps = T/T_s = samples per symbol (oversampling factor)
+
+Typical values:
+  sps = 4:  Good for most systems
+  sps = 8:  Better timing recovery
+  sps = 2:  Minimum (Nyquist rate)
+```
+
+**Filter Length**:
+
+```
+Time span: [-span·T, +span·T]
+
+Number of taps: N = 2·span·sps + 1
+
+Typical values:
+  span = 6:  61 dB sidelobe suppression
+  span = 8:  73 dB sidelobe suppression
+  span = 10: 82 dB sidelobe suppression
+
+Trade-off:
+  - Larger span: Better spectral purity, more delay
+  - Smaller span: Less delay, worse spectrum
+```
+
+**Truncation Effects**:
+
+```
+Truncating RRC to finite length causes:
+
+1. Spectral ripple:
+   Δ|P(f)| ≈ exp(-2π·span)
+
+   span = 6:  ripple ≈ -40 dB
+   span = 8:  ripple ≈ -50 dB
+
+2. Time-domain ringing:
+   Gibbs phenomenon at truncation points
+
+3. ISI residue:
+   Small non-zero values at p(kT) for k ≠ 0
+
+   Magnitude: ISI ≈ 1/span² (typically < -30 dB for span=6)
+
+Solution: Window the filter (Hamming, Kaiser) to reduce ripple
+```
+
+**Windowing**:
+
+```
+Hamming window:
+  w[n] = 0.54 - 0.46·cos(2πn/(N-1))
+
+Kaiser window (adjustable):
+  w[n] = I₀(β·√(1-(2n/(N-1)-1)²)) / I₀(β)
+
+  where I₀ is modified Bessel function of first kind
+
+  β controls trade-off:
+    β = 5:  moderate sidelobe suppression (-50 dB)
+    β = 8:  high suppression (-70 dB)
+
+Windowed RRC:
+  h_win[n] = h_RRC[n] · w[n]
+
+Trade-off:
+  ✅ Reduced spectral ripple
+  ❌ Slightly wider main lobe
+  ❌ Small ISI increase
+```
+
+---
+
+#### **3.5 Complete Transmitter Chain**
+
+**Block Diagram**:
+
+```
+       Upsampling      RRC Filter      Modulation
+Bits ──────────> ───────────────> ────────────> RF
+       (×sps)      (pulse shape)   (I/Q mixer)
+
+Step 1: Upsample
+  - Insert (sps-1) zeros between symbols
+  - Symbol stream: [s₀, s₁, s₂, ...]
+  - Upsampled: [s₀, 0, 0, 0, s₁, 0, 0, 0, s₂, ...]
+
+Step 2: RRC Filter
+  - Convolve upsampled signal with RRC
+  - Smooths transitions between symbols
+  - Limits bandwidth to (1+β)/(2T)
+
+Step 3: Modulation (already complex baseband)
+  - For QPSK: symbols are already ±1±j
+  - Just scale to desired power and upconvert to RF
+```
+
+**Mathematical Expression**:
+
+```
+Symbol sequence: s[k], k = 0, 1, 2, ...
+
+Upsampled: x[n] = s[n/sps]  if n is multiple of sps
+                 = 0         otherwise
+
+Pulse-shaped: y[n] = ∑[k] s[k] · h_RRC[n - k·sps]
+
+Continuous-time: s(t) = ∑[k] s[k] · p_RRC(t - kT)
+```
+
+**Energy Normalization**:
+
+```
+Goal: Ensure E[|s(t)|²] = 1 (unit average power)
+
+RRC filter energy: E_h = ∑[n] |h[n]|²
+
+Normalization: h_norm[n] = h[n] / √(E_h · sps)
+
+Why "sps" factor?
+  - Upsampling by sps reduces power by sps
+  - Need to compensate to maintain unit power
+
+Verification:
+  E[|y[n]|²] = (E[|s[k]|²] / sps) · E_h
+             = 1  (if E[|s[k]|²] = 1 and normalized correctly)
+```
+
+---
+
+#### **3.6 Complete Receiver Chain**
+
+**Block Diagram**:
+
+```
+       Demodulation    Matched Filter   Symbol Sync   Decimation
+RF ───────────────> ───────────────> ─────────────> ──────────> Symbols
+      (I/Q mixer)      (RRC RX)       (timing recov)  (×1/sps)
+
+Step 1: Demodulation
+  - Downconvert RF to baseband
+  - I/Q demodulation
+
+Step 2: Matched Filter (RRC_RX)
+  - Same as TX: h_RRC[n]
+  - Maximizes SNR
+  - Combined TX+RX gives RC response
+
+Step 3: Symbol Synchronization
+  - Find optimal sampling instant
+  - Compensate for timing offset
+
+Step 4: Decimation
+  - Sample at symbol rate (every sps samples)
+  - Discard intermediate samples
+```
+
+**Timing Offset Problem**:
+
+```
+TX clock:  |―T―|―T―|―T―|  (symbol period T)
+RX clock:  |―T―|―T―|―T―|  (same T, but phase offset τ)
+
+Sampling phase: τ ∈ [0, T)
+
+Eye diagram shows why timing matters:
+  - Center of eye: τ = T/2 (optimal, maximum SNR)
+  - Edge of eye:   τ = 0 or T (worst, maximum ISI)
+
+Timing error causes:
+  1. ISI: sampling at non-zero crossings of p(t)
+  2. SNR loss: suboptimal matched filter output
+  3. BER degradation: both effects combine
+```
+
+**Timing Recovery Algorithms**:
+
+**1. Gardner Algorithm** (popular, NDA = Non-Data-Aided):
+
+```
+Timing Error Detector (TED):
+  e[k] = real(y[k]) · (real(y[k+1]) - real(y[k-1]))
+
+  where:
+    y[k] = matched filter output at time k·T_s
+    e[k] > 0: sampling too early
+    e[k] < 0: sampling too late
+    e[k] ≈ 0: optimal timing
+
+Loop Filter (PI controller):
+  τ[k+1] = τ[k] + K_p·e[k] + K_i·∑e[k]
+
+  where:
+    K_p: proportional gain (fast response)
+    K_i: integral gain (removes steady-state error)
+
+Typical gains:
+  K_p = 0.01 to 0.1
+  K_i = K_p² / 4 (for critical damping)
+```
+
+**2. Mueller & Müller Algorithm** (DD = Decision-Directed):
+
+```
+TED:
+  e[k] = real(y[k]) · real(ŝ[k-1]) - real(y[k-1]) · real(ŝ[k])
+
+  where:
+    ŝ[k] = decision on symbol k (±1 for BPSK, ±1±j for QPSK)
+
+Advantage: Works at symbol rate (no interpolation needed)
+Disadvantage: Requires accurate decisions (high SNR)
+```
+
+**3. Early-Late Gate** (simple, popular in hardware):
+
+```
+TED:
+  e[k] = |y[k+Δ]|² - |y[k-Δ]|²
+
+  where:
+    Δ = T/(2·sps) (half symbol period in samples)
+    y[k±Δ] = samples straddling optimal point
+
+Advantage: Very simple, no multiplications
+Disadvantage: Requires high SNR
+```
+
+---
+
+#### **3.7 Timing Recovery Mathematics**
+
+**Phase-Locked Loop (PLL) Model**:
+
+```
+           ┌─────┐      ┌────────┐      ┌─────┐
+y[n] ──>│ TED │──> e[k] │ Loop   │──> τ[k] │ NCO │──> sample points
+           └─────┘      │ Filter │      └─────┘
+                         └────────┘         │
+                               ▲            │
+                               └────────────┘
+
+TED: Timing Error Detector
+NCO: Numerically Controlled Oscillator (generates sampling instants)
+
+Loop dynamics:
+  τ[k+1] = τ[k] + μ·e[k]  (first-order)
+
+  or
+
+  τ[k+1] = τ[k] + μ₁·e[k] + μ₂·∑e[k]  (second-order)
+
+Natural frequency: ω_n = √(μ₁·μ₂)
+Damping ratio: ζ = (μ₁ + μ₂) / (2·√(μ₁·μ₂))
+
+Critical damping: ζ = 1  →  μ₂ = μ₁²/4
+```
+
+**Timing Jitter Analysis**:
+
+```
+Residual timing error: σ_τ²
+
+For Gardner TED at high SNR:
+  σ_τ² ≈ (1 / (4·SNR)) · (1 / N_avg)
+
+  where:
+    SNR = symbol SNR
+    N_avg = averaging length of loop filter
+
+BER degradation due to timing jitter:
+  BER_timing ≈ BER_ideal · (1 + (2π·σ_τ/T)²·SNR)
+
+Example:
+  σ_τ/T = 1%  (1% of symbol period)
+  SNR = 15 dB
+  → BER degradation ≈ 0.5 dB (acceptable)
+```
+
+**Fractional Delay Implementation**:
+
+```
+Problem: Optimal sampling instant is not at integer sample index
+
+Solution 1: Polyphase filterbank
+  - Pre-compute M fractional-delayed versions of matched filter
+  - Select appropriate filter based on τ[k]
+  - M = 32 typical (resolution: T/32)
+
+Solution 2: Lagrange interpolation
+  - Interpolate between samples
+  - Order 3 (cubic) gives good accuracy
+
+  y(t) = ∑[k=0 to 3] y[k] · L_k(t)
+
+  where L_k(t) are Lagrange basis polynomials
+
+Solution 3: Farrow structure
+  - Efficient implementation of Lagrange
+  - Reuses computations
+  - Lower complexity than polyphase
+```
+
+---
+
+#### **3.8 Performance Metrics**
+
+**1. Output SNR (after matched filtering)**:
+
+```
+Input SNR (before RX filter): SNR_in
+Output SNR (after RX filter):
+
+  SNR_out = SNR_in · (E_s / N₀) · T_s
+
+where:
+  E_s = symbol energy
+  N₀ = noise PSD
+
+Matched filter gain:
+  G_MF = ∑[n] |h[n]|² = E_h
+
+For normalized RRC: G_MF = 1
+
+Processing gain from matched filter:
+  G_proc = 10·log₁₀(sps) dB
+
+  sps = 4:  G_proc = 6 dB
+  sps = 8:  G_proc = 9 dB
+```
+
+**2. ISI Measurement**:
+
+```
+After TX RRC + RX RRC → total response is RC
+
+ISI at sampling instants:
+  ISI_k = p_RC(kT) / p_RC(0),  k ≠ 0
+
+For ideal RC with β = 0.35:
+  ISI_1 ≈ -40 dB  (first neighbor)
+  ISI_2 ≈ -60 dB  (second neighbor)
+
+Truncation to span=6 adds:
+  ISI_residual ≈ -30 dB
+
+Total ISI: ISI_total = 10·log₁₀(∑[k≠0] ISI_k²)
+
+  Typical: ISI_total ≈ -25 to -35 dB (negligible)
+```
+
+**3. Spectral Occupancy**:
+
+```
+99% power bandwidth:
+  BW_99 ≈ (1 + β) / T · k
+
+  where k ≈ 1.1 to 1.2 (depends on truncation)
+
+Out-of-band rejection (OOBR):
+  OOBR = 10·log₁₀(P_out / P_total)
+
+  where:
+    P_out = power outside allocated band
+    P_total = total power
+
+For RRC with span=6:
+  OOBR ≈ -40 to -45 dB (good)
+
+For RRC with span=10:
+  OOBR ≈ -50 to -55 dB (excellent)
+```
+
+**4. Timing Recovery Performance**:
+
+```
+Acquisition time: t_acq ≈ (3 to 5) / (μ·R_s)
+
+  where:
+    μ = loop gain
+    R_s = symbol rate
+
+Tracking range: Δf_max ≈ μ·R_s / (2π)
+
+Jitter bandwidth: BW_jitter ≈ μ·R_s / (2π)
+
+Example:
+  R_s = 1 Msps
+  μ = 0.01
+  → t_acq ≈ 3-5 ms
+  → Δf_max ≈ 1.6 kHz
+  → BW_jitter ≈ 1.6 kHz
+```
+
+---
+
+#### **3.9 PlutoSDR-Specific Considerations**
+
+**1. AD9361 Digital Filters**:
+
+```
+AD9361 has built-in FIR filters:
+
+TX path:
+  - TFIR (Transmit FIR): 128 taps
+  - Can implement custom RRC
+  - Decimation by 1, 2, or 4
+
+RX path:
+  - RFIR (Receive FIR): 128 taps
+  - Can implement custom RRC
+  - Interpolation by 1, 2, or 4
+
+Advantage: Offload filtering to FPGA (zero CPU cost)
+Disadvantage: Fixed coefficients until reconfigured
+
+Access via libiio:
+  iio_channel_attr_write_longlong(chn, "filter_fir_en", 1);
+  iio_device_attr_write_raw(dev, "filter_fir_config", config, len);
+```
+
+**2. Sample Rate Constraints**:
+
+```
+AD9361 RX/TX sample rate: 2.5 MHz to 61.44 MHz
+
+For symbol rate R_s with sps oversampling:
+  F_s = R_s · sps
+
+  → R_s_max = 61.44 MHz / sps
+
+  sps = 4:  R_s_max = 15.36 Msps
+  sps = 8:  R_s_max = 7.68 Msps
+
+Recommended for low CPU load:
+  R_s ≤ 1 Msps  (allows processing on ARM)
+```
+
+**3. Memory Constraints**:
+
+```
+PlutoSDR available RAM: ~300 MB
+
+Filter taps storage:
+  span = 10, sps = 4:  N = 81 taps × 8 bytes = 648 bytes (negligible)
+
+Buffer storage (critical):
+  1 second @ 1 Msps: 1M samples × 8 bytes (complex float) = 8 MB
+
+  Circular buffer recommended: 100 ms max (~800 KB)
+```
+
+**4. Fixed-Point vs Floating-Point**:
+
+```
+ARM Cortex-A9 has NEON SIMD:
+  - 32-bit float: 4 operations/cycle (using NEON)
+  - 16-bit fixed: 8 operations/cycle
+
+Recommendation:
+  - Use float for ease of development
+  - NEON optimization gives 4× speedup automatically
+  - Fixed-point only if needed for extreme performance
+
+Precision requirements:
+  - RRC coefficients: 16-bit sufficient (SQNR > 90 dB)
+  - Samples: 12-bit (AD9361 native) or 16-bit
+  - Timing error: 32-bit float (avoid quantization)
+```
+
+---
+
+#### **3.10 Design Trade-offs Summary**
+
+| Parameter | Low Value | High Value | Sweet Spot |
+|-----------|-----------|------------|------------|
+| **Roll-off β** | Narrow BW, slow decay | Wide BW, fast decay | β = 0.35 |
+| **Span** | Low latency, more ISI | High latency, less ISI | span = 6-8 |
+| **sps** | Low sampling rate | Better timing recovery | sps = 4 |
+| **Loop gain μ** | Slow tracking, low jitter | Fast tracking, high jitter | μ = 0.01-0.05 |
+| **Filter length** | Low CPU, more ripple | High CPU, clean spectrum | N = 49-65 |
+
+**Typical Configuration for PlutoSDR**:
+
+```
+Symbol rate: R_s = 500 ksps
+Oversampling: sps = 4
+Sample rate: F_s = 2 Msps
+Roll-off: β = 0.35
+Span: span = 6
+Filter taps: N = 2·6·4 + 1 = 49
+Timing loop gain: μ = 0.02
+```
+
+**Performance Expectations**:
+
+```
+BER (QPSK at 15 dB SNR):
+  - Ideal: 5.3×10⁻⁶
+  - With RRC filtering: 6.1×10⁻⁶ (0.6 dB loss)
+  - With timing recovery: 7.5×10⁻⁶ (0.5 dB additional loss)
+  - Total degradation: ~1.1 dB (acceptable)
+
+Spectrum:
+  - 99% power BW: 675 kHz (= 0.675·R_s for β=0.35)
+  - OOBR @ ±1 MHz: -45 dB
+
+CPU load (ARM Cortex-A9 @ 667 MHz):
+  - RRC filtering: ~5%
+  - Timing recovery: ~2%
+  - Total: ~7% (comfortable margin)
+```
+
+---
+
+### **Summary of Part 3**
+
+You now understand:
+
+✅ **Mathematical foundations**: Nyquist criterion, RC, and RRC filters
+✅ **Filter design**: Length, truncation, windowing, and normalization
+✅ **Transmit chain**: Upsampling, pulse shaping, and energy normalization
+✅ **Receive chain**: Matched filtering, timing recovery, and decimation
+✅ **Timing algorithms**: Gardner, Mueller & Müller, Early-Late Gate
+✅ **Performance metrics**: SNR, ISI, spectral occupancy, timing jitter
+✅ **PlutoSDR specifics**: AD9361 constraints, CPU/memory trade-offs
+
+**Next**: Part 4 will provide complete production-ready C implementation!
+
+---
+
 ## Summary
 
 In this lab, you learned:
