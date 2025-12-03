@@ -31,6 +31,8 @@ docs/
 │   └── SESSION_COMPLETION_SUMMARY.md
 │
 └── guides/                        # Reference guides and documentation
+    ├── PLUTOSDR_ARCHITECTURE.md
+    ├── PLUTOSDR_BUILD_SCRIPTS.md     (✨ NEW!)
     ├── PLUTOSDR_CUSTOM_APPS.md
     ├── PLUTOSDR_TRAINING_PART1.md
     ├── PLUTOSDR_TRAINING_PART2.md
@@ -437,6 +439,42 @@ Use the `analysis/` folder to monitor your progress:
 ⏳ Design FIR/IIR filters
 ⏳ Implement FEC codes
 ⏳ Build synchronization loops
+
+---
+
+## 📖 Internal Guides
+
+Our comprehensive reference documentation in `guides/`:
+
+### Firmware Development
+- **[PlutoSDR Build Scripts Guide](guides/PLUTOSDR_BUILD_SCRIPTS.md)** ✨ **NEW!**
+  - Complete explanation of all build scripts in `scripts/` directory
+  - FPGA, FSBL, U-Boot, Linux kernel compilation flow
+  - JTAG bootstrap and flash programming procedures
+  - Flash partition layout and memory mapping
+  - Troubleshooting and recovery procedures
+  - **Essential for custom firmware development**
+
+### Application Development
+- **[PlutoSDR Architecture](guides/PLUTOSDR_ARCHITECTURE.md)**
+  - Hardware architecture (Zynq-7000, AD9361)
+  - Software stack overview
+  - libiio API reference
+
+- **[PlutoSDR Custom Applications](guides/PLUTOSDR_CUSTOM_APPS.md)**
+  - Writing C applications for PlutoSDR
+  - ARM cross-compilation workflow
+  - Real-time optimization techniques
+
+### Training Materials
+- **[Three Method Approach](guides/THREE_METHOD_APPROACH.md)**
+  - GNU Radio + Python + C methodology
+  - When to use each method
+  - Performance comparison
+
+- **[PlutoSDR Training Parts 1 & 2](guides/)**
+  - Structured training curriculum
+  - From basics to advanced topics
 
 ---
 

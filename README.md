@@ -38,6 +38,14 @@ This repository has been enhanced with **48,000+ lines of comprehensive educatio
 - NEON SIMD optimizations achieving 7-15× speedup on PlutoSDR
 - Real-world integration with libiio for TX/RX applications
 
+**📖 Comprehensive Firmware Build Guide**:
+- **[PlutoSDR Build Scripts Explained →](docs/guides/PLUTOSDR_BUILD_SCRIPTS.md)** ✨ **NEW!**
+  - Complete walkthrough of all scripts in `scripts/` directory
+  - FPGA, FSBL, U-Boot, and Linux kernel compilation
+  - Flash memory layout and partition structure
+  - JTAG programming and recovery procedures
+  - Essential for custom firmware development
+
 [Instructions from the Wiki: Building the image](https://wiki.analog.com/university/tools/pluto/building_the_image)
 
 ---
